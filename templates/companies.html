@@ -1,10 +1,38 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Companies</h1>
-<table>
-  <tr><th>Name</th><th>Contact</th><th>Address</th><th>Active vehicles</th></tr>
-  {% for c in companies %}<tr><td>{{ c.name }}</td><td>{{ c.contact }}</td><td>{{ c.address }}</td><td>{{ c.active_vehicles }}</td></tr>{% endfor %}
-</table>
+<p>A company can run more than one vehicle. Every vehicle assigned to that company is listed below.</p>
+{% for item in fleet %}
+<section class="ledger">
+  <h2>{{ item.company.name }}</h2>
+  <p>{{ item.company.contact or 'No contact' }} · {{ item.company.address or 'No address' }}</p>
+  <table>
+    <tr><th>Vehicle</th><th>Model</th><th>Seater</th><th>Driver</th><th>From</th><th>To</th><th>Purchase</th></tr>
+    {% for v in item.vehicles %}
+    <tr>
+      <td><a href="{{ url_for('vehicle_detail', vehicle_id=v.id) }}">{{ v.number }}</a></td>
+      <td>{{ v.model }}</td>
+      <td>{{ v.seats }} seater</td>
+      <td>{{ v.driver_name or '—' }}</td>
+      <td>{{ v.start_date }}</td>
+      <td>{{ v.end_date or 'Current' }}</td>
+      <td>{{ v.purchase_date or '—' }} · ₹{{ '%.0f'|format(v.purchase_price) }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7">No vehicles assigned yet.</td></tr>
+    {% endfor %}
+  </table>
+  <form method="post" class="inline">
+    <input type="hidden" name="action" value="assign">
+    <input type="hidden" name="company_id" value="{{ item.company.id }}">
+    <select name="vehicle_id">
+      {% for v in all_vehicles %}<option value="{{ v.id }}">{{ v.number }} · {{ v.model }}</option>{% endfor %}
+    </select>
+    <input type="date" name="start_date" value="{{ today }}" required>
+    <button>Add vehicle</button>
+  </form>
+</section>
+{% endfor %}
 <h2>Add a company</h2>
 <form method="post" class="form-grid">
   <label>Name<input name="name" required></label>

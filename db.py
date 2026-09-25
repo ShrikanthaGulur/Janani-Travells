@@ -31,12 +31,21 @@ CREATE TABLE IF NOT EXISTS drivers (
   dl_copy TEXT,
   monthly_salary REAL NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS monthly_salaries (
+  id INTEGER PRIMARY KEY,
+  driver_id INTEGER NOT NULL REFERENCES drivers(id),
+  year_month TEXT NOT NULL,
+  amount REAL NOT NULL,
+  UNIQUE(driver_id, year_month)
+);
 CREATE TABLE IF NOT EXISTS advances (
   id INTEGER PRIMARY KEY,
   driver_id INTEGER NOT NULL REFERENCES drivers(id),
   amount REAL NOT NULL,
   paid_on TEXT NOT NULL,
-  note TEXT DEFAULT ''
+  note TEXT DEFAULT '',
+  payment_mode TEXT NOT NULL DEFAULT 'Cash',
+  transaction_id TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS attendance (
   id INTEGER PRIMARY KEY,
@@ -53,6 +62,7 @@ CREATE TABLE IF NOT EXISTS vehicles (
   number TEXT UNIQUE NOT NULL,
   model TEXT NOT NULL,
   vtype TEXT NOT NULL CHECK(vtype IN ('COMMERCIAL','PASSENGER')),
+  seats INTEGER NOT NULL DEFAULT 0,
   purchase_date TEXT,
   purchase_price REAL NOT NULL DEFAULT 0,
   min_mileage REAL NOT NULL DEFAULT 4,
@@ -138,6 +148,24 @@ CREATE TABLE IF NOT EXISTS accessories (
   present INTEGER NOT NULL DEFAULT 0,
   checked_on TEXT
 );
+CREATE TABLE IF NOT EXISTS handovers (
+  id INTEGER PRIMARY KEY,
+  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+  driver_id INTEGER NOT NULL REFERENCES drivers(id),
+  taken_on TEXT NOT NULL,
+  note TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS handover_items (
+  id INTEGER PRIMARY KEY,
+  handover_id INTEGER NOT NULL REFERENCES handovers(id),
+  name TEXT NOT NULL,
+  checked INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS checklist_items (
+  id INTEGER PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  built_in INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS billing_rates (
   vtype TEXT PRIMARY KEY,
   per_km REAL NOT NULL,
@@ -191,8 +219,26 @@ def connect():
 def init_db():
     conn = connect()
     conn.executescript(SCHEMA)
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(vehicles)")]
+    if "seats" not in columns:
+        conn.execute("ALTER TABLE vehicles ADD COLUMN seats INTEGER NOT NULL DEFAULT 0")
+    advance_columns = [row[1] for row in conn.execute("PRAGMA table_info(advances)")]
+    if "payment_mode" not in advance_columns:
+        conn.execute("ALTER TABLE advances ADD COLUMN payment_mode TEXT NOT NULL DEFAULT 'Cash'")
+    if "transaction_id" not in advance_columns:
+        conn.execute("ALTER TABLE advances ADD COLUMN transaction_id TEXT DEFAULT ''")
     if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0:
         seed(conn)
+    if conn.execute("SELECT COUNT(*) AS c FROM checklist_items").fetchone()["c"] == 0:
+        for name in (
+            "Fasttag active - Sufficient balance",
+            "Spare/extra tyre",
+            "Jack",
+            "Wheel spanner",
+            "Jack rod/Handle",
+            "Tow rope",
+        ):
+            conn.execute("INSERT INTO checklist_items (name, built_in) VALUES (?,1)", (name,))
     if conn.execute("SELECT COUNT(*) AS c FROM attendance").fetchone()["c"] == 0:
         today = date.today()
         for driver in conn.execute("SELECT id FROM drivers"):

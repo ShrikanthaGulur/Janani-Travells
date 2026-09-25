@@ -1,8 +1,9 @@
 {
-  "name": "Janani Travels",
+  "name": "Janani",
   "short_name": "Janani",
+  "icons": [{ "src": "/static/janani-logo.png", "sizes": "512x512", "type": "image/png" }],
   "start_url": "/m",
   "display": "standalone",
-  "background_color": "#f3efe4",
-  "theme_color": "#1d3c34"
+  "background_color": "#f4f0fa",
+  "theme_color": "#5b4b9a"
 }

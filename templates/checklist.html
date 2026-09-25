@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Vehicle take checklist</h1>
+<p>Tick these before the driver takes the vehicle from Janani.</p>
+{% if not vehicles %}
+<p>No vehicle is assigned, so this checklist cannot be saved yet.</p>
+{% else %}
+<form method="post" class="stack">
+  {% if is_driver %}
+  <input type="hidden" name="vehicle_id" value="{{ vehicles[0].id }}">
+  <p>Vehicle <strong>{{ vehicles[0].number }}</strong> · {{ vehicles[0].model }}</p>
+  {% else %}
+  <div class="form-grid">
+    <label>Driver
+      <select name="driver_id">{% for d in drivers %}<option value="{{ d.id }}">{{ d.name }}</option>{% endfor %}</select>
+    </label>
+    <label>Vehicle
+      <select name="vehicle_id">{% for v in vehicles %}<option value="{{ v.id }}">{{ v.number }} · {{ v.model }}</option>{% endfor %}</select>
+    </label>
+  </div>
+  {% endif %}
+  <label>Date taken<input type="date" name="taken_on" value="{{ today }}" required></label>
+  {% for item in items %}
+  <label class="check"><input type="checkbox" name="item" value="{{ item }}"> {{ loop.index }}. {{ item }}</label>
+  {% endfor %}
+  <label>Note<input name="note" placeholder="Optional"></label>
+  <button>Save checklist</button>
+</form>
+{% endif %}
+{% if can_edit %}
+<h2>Add an extra item</h2>
+<p>Use this when a client needs something that is not in the standard six, such as a music system, TV, or first-aid kit.</p>
+<form method="post" class="inline">
+  <input type="hidden" name="action" value="add_item">
+  <input name="item_name" placeholder="First aid kit" required>
+  <button>Add checkbox</button>
+</form>
+{% if catalog %}
+<ul>
+  {% for row in catalog %}
+  <li>
+    {{ row.name }}
+    {% if not row.built_in %}
+    <form method="post" class="inline">
+      <input type="hidden" name="action" value="remove_item">
+      <input type="hidden" name="item_id" value="{{ row.id }}">
+      <button>Remove</button>
+    </form>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+<h2>Saved checklists</h2>
+{% for row in history %}
+<section class="ledger">
+  <h2>{{ row.taken_on }} · {{ row.driver_name }} · {{ row.number }}</h2>
+  <ul>
+    {% for item in items_by_handover[row.id] %}
+    <li>{{ 'Yes' if item.checked else 'No' }} — {{ item.name }}</li>
+    {% endfor %}
+  </ul>
+  {% if row.note %}<p>{{ row.note }}</p>{% endif %}
+</section>
+{% else %}
+<p>No vehicle handover has been recorded yet.</p>
+{% endfor %}
+{% endblock %}

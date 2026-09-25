@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Mileage and profit</h1>
+<p>Profit for each vehicle is the kilometres it ran, priced at the per-km rate, minus that vehicle’s fuel and maintenance cost.</p>
+<form class="filters" method="get">
+  <input type="date" name="start" value="{{ start }}">
+  <input type="date" name="end" value="{{ end }}">
+  <button>Apply range</button>
+</form>
+<section class="cards">
+  <article><span>Kilometres</span><strong>{{ '%.0f'|format(totals.km) }}</strong></article>
+  <article><span>Mileage income</span><strong>₹{{ '%.0f'|format(totals.revenue) }}</strong></article>
+  <article><span>Fuel</span><strong>₹{{ '%.0f'|format(totals.fuel) }}</strong></article>
+  <article><span>Maintenance</span><strong>₹{{ '%.0f'|format(totals.maintenance) }}</strong></article>
+  <article><span>Profit / loss</span><strong>₹{{ '%.0f'|format(totals.profit) }}</strong></article>
+</section>
+<p>Commercial rate ₹{{ rates.COMMERCIAL }}/km · passenger rate ₹{{ rates.PASSENGER }}/km.</p>
+<table>
+  <tr>
+    <th>Vehicle</th><th>Company</th><th>KM</th><th>km/l</th><th>Income</th><th>Fuel</th><th>Maintenance</th><th>Profit / loss</th><th>Flags</th>
+  </tr>
+  {% for row in rows %}
+  <tr>
+    <td><a href="{{ url_for('vehicle_detail', vehicle_id=row.vehicle.id) }}">{{ row.vehicle.number }}</a><br>{{ row.vehicle.model }}</td>
+    <td>{{ row.company }}</td>
+    <td>{{ '%.1f'|format(row.km) }}</td>
+    <td>{{ '%.2f'|format(row.kmpl) if row.kmpl else '—' }}</td>
+    <td>₹{{ '%.0f'|format(row.revenue) }}</td>
+    <td>₹{{ '%.0f'|format(row.fuel) }}</td>
+    <td>₹{{ '%.0f'|format(row.maintenance) }}</td>
+    <td>₹{{ '%.0f'|format(row.profit) }}</td>
+    <td>{% if row.low %}Low {{ row.low }}{% endif %} {% if row.high %}High {{ row.high }}{% endif %}{% if not row.low and not row.high %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

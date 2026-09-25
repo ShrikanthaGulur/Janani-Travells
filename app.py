@@ -27,6 +27,14 @@ from db import UPLOAD_DIR, audit, connect, init_db, refresh_notifications
 
 ALLOWED = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
 DOC_KINDS = ["RC", "Insurance", "FC", "Permit", "Pollution"]
+HANDOVER_ITEMS = [
+    "Fasttag active - Sufficient balance",
+    "Spare/extra tyre",
+    "Jack",
+    "Wheel spanner",
+    "Jack rod/Handle",
+    "Tow rope",
+]
 POSITIONS = ["Front Left", "Front Right", "Rear Left", "Rear Right", "Stepney"]
 
 
@@ -106,6 +114,13 @@ def create_app():
     def month_start():
         return date.today().replace(day=1).isoformat()
 
+    def month_salary(driver, month):
+        row = g.db.execute(
+            "SELECT amount FROM monthly_salaries WHERE driver_id=? AND year_month=?",
+            (driver["id"], month),
+        ).fetchone()
+        return row["amount"] if row else driver["monthly_salary"]
+
     def salary_summary(driver, month=None):
         month = month or date.today().strftime("%Y-%m")
         taken_all = g.db.execute(
@@ -116,15 +131,16 @@ def create_app():
             "SELECT COALESCE(SUM(amount),0) AS s FROM advances WHERE driver_id=? AND paid_on LIKE ?",
             (driver["id"], month + "%"),
         ).fetchone()["s"]
+        monthly = month_salary(driver, month)
         return {
-            "monthly": driver["monthly_salary"],
+            "monthly": monthly,
             "advance_all": taken_all,
             "advance_month": taken_month,
-            "remaining": driver["monthly_salary"] - taken_month,
+            "remaining": monthly - taken_month,
         }
 
     def salary_ledger(driver, month):
-        balance = driver["monthly_salary"]
+        balance = month_salary(driver, month)
         lines = []
         rows = g.db.execute(
             "SELECT * FROM advances WHERE driver_id=? AND paid_on LIKE ? ORDER BY paid_on, id",
@@ -132,7 +148,14 @@ def create_app():
         ).fetchall()
         for row in rows:
             balance -= row["amount"]
-            lines.append({"paid_on": row["paid_on"], "amount": row["amount"], "note": row["note"], "balance": balance})
+            lines.append({
+                "paid_on": row["paid_on"],
+                "amount": row["amount"],
+                "note": row["note"],
+                "balance": balance,
+                "payment_mode": row["payment_mode"] if "payment_mode" in row.keys() else "Cash",
+                "transaction_id": row["transaction_id"] if "transaction_id" in row.keys() else "",
+            })
         return lines
 
     def assigned_vehicle(driver_id):
@@ -310,6 +333,101 @@ def create_app():
             can_edit=g.user["role"] in {"ADMIN", "MANAGER"},
         )
 
+    @app.route("/checklist", methods=["GET", "POST"])
+    @login_required
+    def checklist():
+        def item_names():
+            return [row["name"] for row in g.db.execute("SELECT name FROM checklist_items ORDER BY built_in DESC, id")]
+
+        if request.method == "POST":
+            action = request.form.get("action") or "handover"
+            if action == "add_item":
+                if g.user["role"] not in {"ADMIN", "MANAGER"}:
+                    abort(403)
+                name = request.form.get("item_name", "").strip()
+                if not name:
+                    flash("Enter a name for the extra checklist item.")
+                elif g.db.execute("SELECT id FROM checklist_items WHERE name=?", (name,)).fetchone():
+                    flash("That checklist item already exists.")
+                else:
+                    g.db.execute("INSERT INTO checklist_items (name, built_in) VALUES (?,0)", (name,))
+                    audit(g.db, g.user["id"], "CREATE", "checklist_item", name, name)
+                    g.db.commit()
+                    flash(f"Added “{name}” to the checklist.")
+                return redirect(url_for("checklist"))
+            if action == "remove_item":
+                if g.user["role"] not in {"ADMIN", "MANAGER"}:
+                    abort(403)
+                g.db.execute("DELETE FROM checklist_items WHERE id=? AND built_in=0", (int(request.form["item_id"]),))
+                g.db.commit()
+                flash("Extra checklist item removed.")
+                return redirect(url_for("checklist"))
+            if g.user["role"] == "DRIVER":
+                driver_id = g.user["driver_id"]
+                own = assigned_vehicle(driver_id)
+                vehicle_id = own["id"] if own else None
+                if not vehicle_id or vehicle_id != int(request.form["vehicle_id"]):
+                    abort(403)
+            else:
+                driver_id = int(request.form["driver_id"])
+                vehicle_id = int(request.form["vehicle_id"])
+            taken_on = request.form["taken_on"]
+            names = item_names()
+            checked = set(request.form.getlist("item"))
+            cur = g.db.execute(
+                "INSERT INTO handovers (vehicle_id, driver_id, taken_on, note) VALUES (?,?,?,?)",
+                (vehicle_id, driver_id, taken_on, request.form.get("note", "")),
+            )
+            for name in names:
+                g.db.execute(
+                    "INSERT INTO handover_items (handover_id, name, checked) VALUES (?,?,?)",
+                    (cur.lastrowid, name, 1 if name in checked else 0),
+                )
+            audit(g.db, g.user["id"], "CREATE", "handover", vehicle_id, taken_on)
+            g.db.commit()
+            missing = [name for name in names if name not in checked]
+            if missing:
+                flash("Checklist saved. Still unchecked: " + ", ".join(missing) + ".")
+            else:
+                flash("Checklist saved. Every item is ticked.")
+            return redirect(url_for("checklist"))
+        if g.user["role"] == "DRIVER":
+            driver = g.db.execute("SELECT * FROM drivers WHERE id=?", (g.user["driver_id"],)).fetchone()
+            vehicle = assigned_vehicle(g.user["driver_id"])
+            drivers = [driver]
+            vehicles = [vehicle] if vehicle else []
+        else:
+            drivers = g.db.execute("SELECT * FROM drivers ORDER BY name").fetchall()
+            vehicles = g.db.execute("SELECT * FROM vehicles ORDER BY number").fetchall()
+        history = g.db.execute(
+            """SELECT h.*, d.name AS driver_name, v.number
+               FROM handovers h
+               JOIN drivers d ON d.id=h.driver_id
+               JOIN vehicles v ON v.id=h.vehicle_id
+               ORDER BY h.taken_on DESC, h.id DESC LIMIT 30"""
+        ).fetchall()
+        if g.user["role"] == "DRIVER":
+            history = [row for row in history if row["driver_id"] == g.user["driver_id"]]
+        items_by_handover = {}
+        for row in history:
+            items_by_handover[row["id"]] = g.db.execute(
+                "SELECT name, checked FROM handover_items WHERE handover_id=? ORDER BY id",
+                (row["id"],),
+            ).fetchall()
+        catalog = g.db.execute("SELECT * FROM checklist_items ORDER BY built_in DESC, id").fetchall()
+        return render_template(
+            "checklist.html",
+            items=[row["name"] for row in catalog],
+            catalog=catalog,
+            drivers=drivers,
+            vehicles=vehicles,
+            history=history,
+            items_by_handover=items_by_handover,
+            can_edit=g.user["role"] in {"ADMIN", "MANAGER"},
+            is_driver=g.user["role"] == "DRIVER",
+            today=date.today().isoformat(),
+        )
+
     @app.route("/advances", methods=["GET", "POST"])
     @login_required
     def advances():
@@ -322,38 +440,71 @@ def create_app():
                 abort(404)
             if request.form.get("action") == "salary":
                 salary = float(request.form["monthly_salary"])
-                g.db.execute("UPDATE drivers SET monthly_salary=? WHERE id=?", (salary, driver_id))
-                audit(g.db, g.user["id"], "UPDATE", "driver", driver_id, f"salary {salary}")
+                pay_month = request.form.get("month") or date.today().strftime("%Y-%m")
+                g.db.execute(
+                    """INSERT INTO monthly_salaries (driver_id, year_month, amount) VALUES (?,?,?)
+                       ON CONFLICT(driver_id, year_month) DO UPDATE SET amount=excluded.amount""",
+                    (driver_id, pay_month, salary),
+                )
+                audit(g.db, g.user["id"], "UPDATE", "salary", driver_id, f"{pay_month} {salary}")
                 g.db.commit()
-                flash(f"{driver['name']}'s monthly salary is now ₹{salary:,.0f}.")
-                return redirect(url_for("advances", month=request.form.get("month") or date.today().strftime("%Y-%m")))
+                flash(f"{driver['name']}'s salary for {pay_month} is ₹{salary:,.0f}. Other months are unchanged.")
+                return redirect(url_for("advances", driver=driver_id, month=pay_month))
             amount = float(request.form["amount"])
             paid_on = request.form["paid_on"]
+            view_month = request.form.get("month") or paid_on[:7]
+            if not paid_on.startswith(view_month):
+                flash("The advance date has to be inside the month you selected.")
+                return redirect(url_for("advances", driver=driver_id, month=view_month))
+            mode = request.form.get("payment_mode") or "Cash"
+            if mode not in {"Cash", "UPI", "Bank transfer"}:
+                mode = "Cash"
+            txn = request.form.get("transaction_id", "").strip()
             g.db.execute(
-                "INSERT INTO advances (driver_id, amount, paid_on, note) VALUES (?,?,?,?)",
-                (driver_id, amount, paid_on, request.form.get("note", "")),
+                "INSERT INTO advances (driver_id, amount, paid_on, note, payment_mode, transaction_id) VALUES (?,?,?,?,?,?)",
+                (driver_id, amount, paid_on, request.form.get("note", ""), mode, txn),
             )
             deducted = g.db.execute(
                 "SELECT COALESCE(SUM(amount),0) s FROM advances WHERE driver_id=? AND paid_on LIKE ?",
                 (driver_id, paid_on[:7] + "%"),
             ).fetchone()["s"]
-            balance = driver["monthly_salary"] - deducted
+            salary = month_salary(driver, paid_on[:7])
+            balance = salary - deducted
             audit(g.db, g.user["id"], "CREATE", "advance", driver_id, str(amount))
             g.db.commit()
-            flash(f"₹{amount:,.0f} deducted from {driver['name']}'s ₹{driver['monthly_salary']:,.0f} salary. Balance payable is ₹{balance:,.0f}.")
-            return redirect(url_for("advances", month=paid_on[:7]))
+            flash(f"₹{amount:,.0f} deducted from {driver['name']}'s {paid_on[:7]} salary of ₹{salary:,.0f}. Balance payable is ₹{balance:,.0f}.")
+            return redirect(url_for("advances", driver=driver_id, month=paid_on[:7]))
         month = request.args.get("month") or date.today().strftime("%Y-%m")
         if g.user["role"] == "DRIVER":
             people = g.db.execute("SELECT * FROM drivers WHERE id=?", (g.user["driver_id"],)).fetchall()
             can_edit = False
+            selected_id = g.user["driver_id"]
         else:
             people = g.db.execute("SELECT * FROM drivers ORDER BY name").fetchall()
             can_edit = True
+            selected_id = request.args.get("driver", type=int)
         ledgers = []
+        selected = None
         for driver in people:
             summary = salary_summary(driver, month)
-            ledgers.append({"driver": driver, "summary": summary, "lines": salary_ledger(driver, month)})
-        return render_template("advances.html", ledgers=ledgers, month=month, can_edit=can_edit, today=date.today().isoformat())
+            item = {"driver": driver, "summary": summary, "lines": []}
+            if selected_id and driver["id"] == selected_id:
+                item["lines"] = salary_ledger(driver, month)
+                selected = item
+            ledgers.append(item)
+        year, mon = [int(part) for part in month.split("-")]
+        last_day = calendar.monthrange(year, mon)[1]
+        paid_default = date.today().isoformat() if date.today().strftime("%Y-%m") == month else f"{month}-01"
+        return render_template(
+            "advances.html",
+            ledgers=ledgers,
+            selected=selected,
+            month=month,
+            can_edit=can_edit,
+            today=paid_default,
+            month_start=f"{month}-01",
+            month_end=f"{month}-{last_day:02d}",
+        )
 
     @app.route("/dashboard")
     @roles("ADMIN", "MANAGER")
@@ -512,12 +663,13 @@ def create_app():
             else:
                 cur = g.db.execute(
                     """INSERT INTO vehicles
-                    (number, model, vtype, purchase_date, purchase_price, min_mileage, max_mileage, service_interval_km, service_interval_days)
-                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (number, model, vtype, seats, purchase_date, purchase_price, min_mileage, max_mileage, service_interval_km, service_interval_days)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (
                         number,
                         request.form["model"].strip(),
-                        request.form["vtype"],
+                        request.form.get("vtype") or "PASSENGER",
+                        int(request.form.get("seats") or 0),
                         request.form.get("purchase_date") or None,
                         float(request.form.get("purchase_price") or 0),
                         float(request.form.get("min_mileage") or 4),
@@ -573,11 +725,12 @@ def create_app():
             action = request.form.get("action")
             if action == "profile":
                 g.db.execute(
-                    """UPDATE vehicles SET model=?, vtype=?, purchase_date=?, purchase_price=?,
+                    """UPDATE vehicles SET model=?, vtype=?, seats=?, purchase_date=?, purchase_price=?,
                        min_mileage=?, max_mileage=?, service_interval_km=?, service_interval_days=? WHERE id=?""",
                     (
                         request.form["model"].strip(),
-                        request.form["vtype"],
+                        request.form.get("vtype") or "PASSENGER",
+                        int(request.form.get("seats") or 0),
                         request.form.get("purchase_date") or None,
                         float(request.form.get("purchase_price") or 0),
                         float(request.form.get("min_mileage") or 4),
@@ -709,7 +862,7 @@ def create_app():
     @app.route("/companies", methods=["GET", "POST"])
     @roles("ADMIN", "MANAGER")
     def companies():
-        if request.method == "POST":
+        if request.method == "POST" and request.form.get("action") != "assign":
             cur = g.db.execute(
                 "INSERT INTO companies (name, contact, address) VALUES (?,?,?)",
                 (request.form["name"].strip(), request.form.get("contact", "").strip(), request.form.get("address", "").strip()),
@@ -718,12 +871,41 @@ def create_app():
             g.db.commit()
             flash("Company saved.")
             return redirect(url_for("companies"))
-        rows = g.db.execute(
-            """SELECT c.*,
-               (SELECT COUNT(*) FROM company_assignments ca WHERE ca.company_id=c.id AND ca.end_date IS NULL) AS active_vehicles
-               FROM companies c ORDER BY c.name"""
-        ).fetchall()
-        return render_template("companies.html", companies=rows)
+        if request.form.get("action") == "assign":
+            vehicle_id = int(request.form["vehicle_id"])
+            company_id = int(request.form["company_id"])
+            start = request.form["start_date"]
+            g.db.execute(
+                "UPDATE company_assignments SET end_date=? WHERE vehicle_id=? AND end_date IS NULL",
+                (start, vehicle_id),
+            )
+            g.db.execute(
+                "INSERT INTO company_assignments (vehicle_id, company_id, start_date) VALUES (?,?,?)",
+                (vehicle_id, company_id, start),
+            )
+            audit(g.db, g.user["id"], "ASSIGN", "company", company_id, str(vehicle_id))
+            g.db.commit()
+            flash("Vehicle added to this company.")
+            return redirect(url_for("companies"))
+        rows = g.db.execute("SELECT * FROM companies ORDER BY name").fetchall()
+        fleet = []
+        for company in rows:
+            vehicles = g.db.execute(
+                """SELECT v.number, v.model, v.vtype, v.seats, v.purchase_date, v.purchase_price, v.id,
+                          ca.start_date, ca.end_date,
+                          (SELECT d.name FROM driver_assignments da
+                           JOIN drivers d ON d.id=da.driver_id
+                           WHERE da.vehicle_id=v.id AND da.end_date IS NULL
+                           ORDER BY da.start_date DESC LIMIT 1) AS driver_name
+                   FROM company_assignments ca
+                   JOIN vehicles v ON v.id=ca.vehicle_id
+                   WHERE ca.company_id=?
+                   ORDER BY ca.end_date IS NOT NULL, v.number""",
+                (company["id"],),
+            ).fetchall()
+            fleet.append({"company": company, "vehicles": vehicles})
+        all_vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
+        return render_template("companies.html", fleet=fleet, all_vehicles=all_vehicles, today=date.today().isoformat())
 
     @app.route("/fuel", methods=["GET", "POST"])
     @login_required
@@ -806,6 +988,66 @@ def create_app():
                     status = "soon"
             cards.append({"vehicle": vehicle, "status": status, "detail": detail, "latest_km": latest_km})
         return render_template("maintenance.html", cards=cards)
+
+    @app.route("/mileage")
+    @roles("ADMIN", "MANAGER")
+    def mileage():
+        start = request.args.get("start", month_start())
+        end = request.args.get("end", date.today().isoformat())
+        rates = {row["vtype"]: row["per_km"] for row in g.db.execute("SELECT * FROM billing_rates")}
+        rows = []
+        totals = {"km": 0, "revenue": 0, "fuel": 0, "maintenance": 0, "profit": 0}
+        for vehicle in g.db.execute("SELECT * FROM vehicles ORDER BY number"):
+            stats = g.db.execute(
+                """SELECT COALESCE(SUM(end_km-start_km),0) km,
+                          COALESCE(SUM(fuel_litres),0) litres,
+                          COALESCE(SUM(CASE WHEN fuel_litres>0 THEN (end_km-start_km) END),0) alert_km
+                   FROM mileage_logs WHERE vehicle_id=? AND log_date BETWEEN ? AND ?""",
+                (vehicle["id"], start, end),
+            ).fetchone()
+            flags = g.db.execute(
+                """SELECT
+                     SUM(CASE WHEN alert='LOW' THEN 1 ELSE 0 END) low,
+                     SUM(CASE WHEN alert='HIGH' THEN 1 ELSE 0 END) high
+                   FROM mileage_logs WHERE vehicle_id=? AND log_date BETWEEN ? AND ?""",
+                (vehicle["id"], start, end),
+            ).fetchone()
+            fuel_cost = g.db.execute(
+                "SELECT COALESCE(SUM(cost),0) s FROM fuel_entries WHERE vehicle_id=? AND entry_date BETWEEN ? AND ?",
+                (vehicle["id"], start, end),
+            ).fetchone()["s"]
+            maint_cost = g.db.execute(
+                "SELECT COALESCE(SUM(cost),0) s FROM services WHERE vehicle_id=? AND service_date BETWEEN ? AND ?",
+                (vehicle["id"], start, end),
+            ).fetchone()["s"]
+            km = stats["km"] or 0
+            litres = stats["litres"] or 0
+            kmpl = (km / litres) if litres else 0
+            revenue = km * rates.get(vehicle["vtype"], 0)
+            profit = revenue - fuel_cost - maint_cost
+            company = g.db.execute(
+                """SELECT c.name FROM company_assignments ca JOIN companies c ON c.id=ca.company_id
+                   WHERE ca.vehicle_id=? AND ca.end_date IS NULL LIMIT 1""",
+                (vehicle["id"],),
+            ).fetchone()
+            rows.append({
+                "vehicle": vehicle,
+                "company": company["name"] if company else "—",
+                "km": km,
+                "kmpl": kmpl,
+                "revenue": revenue,
+                "fuel": fuel_cost,
+                "maintenance": maint_cost,
+                "profit": profit,
+                "low": flags["low"] or 0,
+                "high": flags["high"] or 0,
+            })
+            totals["km"] += km
+            totals["revenue"] += revenue
+            totals["fuel"] += fuel_cost
+            totals["maintenance"] += maint_cost
+            totals["profit"] += profit
+        return render_template("mileage.html", rows=rows, totals=totals, start=start, end=end, rates=rates)
 
     @app.route("/reports", methods=["GET", "POST"])
     @roles("ADMIN", "MANAGER")
@@ -956,7 +1198,7 @@ def create_app():
     def invoice_pdf(invoice_id):
         inv = _invoice(invoice_id)
         lines = [
-            "Janani Travels",
+            "Janani",
             f"Invoice #{inv['id']}",
             f"Company: {inv['company']}",
             f"Vehicle: {inv['number']} ({inv['model']})",
@@ -1204,4 +1446,4 @@ def _simple_pdf(lines):
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5050, debug=True)
+    app.run(host="0.0.0.0", port=5050, debug=True)

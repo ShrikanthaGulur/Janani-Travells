@@ -8,7 +8,7 @@
 </section>
 {% if vehicle %}
 <h2>Assigned vehicle</h2>
-<p><a href="{{ url_for('vehicle_detail', vehicle_id=vehicle.id) }}">{{ vehicle.number }}</a> · {{ vehicle.model }} · since {{ vehicle.start_date }}</p>
+<p><a href="{{ url_for('vehicle_detail', vehicle_id=vehicle.id) }}">{{ vehicle.number }}</a> · {{ vehicle.model }} · {{ vehicle.seats }} seater · since {{ vehicle.start_date }}</p>
 <h2>Enter fuel and KM</h2>
 <form method="post" action="{{ url_for('fuel') }}" class="form-grid" id="fuel-form">
   <input type="hidden" name="vehicle_id" value="{{ vehicle.id }}">

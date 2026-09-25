@@ -15,11 +15,11 @@
   <button>Filter</button>
 </form>
 <table>
-  <tr><th>Number</th><th>Model</th><th>Type</th><th>Company</th><th>Mileage band</th></tr>
+  <tr><th>Number</th><th>Model</th><th>Seater</th><th>Company</th><th>Mileage band</th></tr>
   {% for v in vehicles %}
   <tr>
     <td><a href="{{ url_for('vehicle_detail', vehicle_id=v.id) }}">{{ v.number }}</a></td>
-    <td>{{ v.model }}</td><td>{{ v.vtype }}</td><td>{{ v.company_name or '—' }}</td>
+    <td>{{ v.model }}</td><td>{{ v.seats }} seater</td><td>{{ v.company_name or '—' }}</td>
     <td>{{ v.min_mileage }}–{{ v.max_mileage }} km/l</td>
   </tr>
   {% endfor %}
@@ -28,7 +28,8 @@
 <form method="post" class="form-grid">
   <label>Number<input name="number" required></label>
   <label>Model<input name="model" required></label>
-  <label>Type<select name="vtype"><option>COMMERCIAL</option><option>PASSENGER</option></select></label>
+  <input type="hidden" name="vtype" value="PASSENGER">
+  <label>Seater<input type="number" min="1" name="seats" placeholder="12" required></label>
   <label>Purchase date<input type="date" name="purchase_date"></label>
   <label>Purchase price<input type="number" step="0.01" name="purchase_price"></label>
   <label>Min km/l<input type="number" step="0.1" name="min_mileage" value="4"></label>

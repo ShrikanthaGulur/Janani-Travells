@@ -1,3 +1,12 @@
+document.querySelectorAll("nav details").forEach((item) => {
+  item.addEventListener("toggle", () => {
+    if (!item.open) return;
+    document.querySelectorAll("nav details").forEach((other) => {
+      if (other !== item) other.open = false;
+    });
+  });
+});
+
 document.querySelectorAll("[data-phone]").forEach((button) => {
   button.addEventListener("click", () => {
     const input = document.querySelector("input[name=phone]");

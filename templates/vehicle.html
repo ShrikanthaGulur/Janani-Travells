@@ -1,14 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
 <p><a href="{{ url_for('vehicles') if can_edit else url_for('driver_home') }}">Back</a></p>
-<h1>{{ vehicle.number }} <small>{{ vehicle.model }} · {{ vehicle.vtype }}</small></h1>
+<h1>{{ vehicle.number }} <small>{{ vehicle.model }} · {{ vehicle.seats }} seater</small></h1>
 <p>Bought {{ vehicle.purchase_date or '—' }} for ₹{{ '%.0f'|format(vehicle.purchase_price) }}. Mileage band {{ vehicle.min_mileage }}–{{ vehicle.max_mileage }} km/l. Service every {{ vehicle.service_interval_km|int }} km or {{ vehicle.service_interval_days }} days.</p>
 {% if can_edit %}
 <details open><summary>Vehicle details</summary>
 <form method="post" class="form-grid">
   <input type="hidden" name="action" value="profile">
   <label>Model<input name="model" value="{{ vehicle.model }}"></label>
-  <label>Type<select name="vtype"><option {% if vehicle.vtype=='COMMERCIAL' %}selected{% endif %}>COMMERCIAL</option><option {% if vehicle.vtype=='PASSENGER' %}selected{% endif %}>PASSENGER</option></select></label>
+  <input type="hidden" name="vtype" value="PASSENGER">
+  <label>Seater<input type="number" min="1" name="seats" value="{{ vehicle.seats or '' }}" required></label>
   <label>Purchase date<input type="date" name="purchase_date" value="{{ vehicle.purchase_date or '' }}"></label>
   <label>Price<input type="number" step="0.01" name="purchase_price" value="{{ vehicle.purchase_price }}"></label>
   <label>Min km/l<input type="number" step="0.1" name="min_mileage" value="{{ vehicle.min_mileage }}"></label>

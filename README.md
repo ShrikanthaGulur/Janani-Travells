@@ -1,4 +1,4 @@
-# Janani Travels
+# Janani
 
 Local web desk for fleet operations, plus a phone-sized driver view and a small JSON API an Android client can call.
 
