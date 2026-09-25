@@ -15,8 +15,11 @@
 {% if me %}
 <div class="shell">
   <aside>
-    <a class="brand" href="{{ url_for('driver_home' if me.role == 'DRIVER' else 'dashboard') }}"><img class="logo" src="{{ url_for('static', filename='janani-logo.png', v=2) }}" alt=""><span class="wordmark">Janani</span></a>
-    <nav>
+    <div class="brand-row">
+      <a class="brand" href="{{ url_for('driver_home' if me.role == 'DRIVER' else 'dashboard') }}"><img class="logo" src="{{ url_for('static', filename='janani-logo.png', v=2) }}" alt=""><span class="wordmark">Janani</span></a>
+      <button type="button" class="menu-btn" id="menu-btn" aria-expanded="false" aria-controls="side-nav">Menu</button>
+    </div>
+    <nav id="side-nav">
       {% set page = request.endpoint %}
       {% if me.role != 'DRIVER' %}
       <a class="top-link" href="{{ url_for('dashboard') }}">Dashboard</a>

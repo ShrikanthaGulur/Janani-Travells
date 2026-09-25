@@ -15,7 +15,9 @@ h1 small { font-size: 0.55em; color: #5c675f; font-weight: 500; }
 h2 { margin-top: 28px; font-size: 1.05rem; }
 .shell { display: grid; grid-template-columns: 230px 1fr; min-height: 100vh; }
 aside { background: #3f3478; color: #f7f4ff; padding: 22px 16px; display: flex; flex-direction: column; gap: 18px; }
+.brand-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .brand { font-size: 1.35rem; font-weight: 700; display: flex; align-items: center; gap: 10px; color: #f7f4ff; text-decoration: none; }
+.menu-btn { display: none; }
 .wordmark { font-family: Outfit, "Avenir Next", sans-serif; font-weight: 700; letter-spacing: 0.06em; }
 .logo { width: 42px; height: 42px; border-radius: 12px; }
 .login-logo { width: 72px; height: 72px; border-radius: 18px; margin-bottom: 8px; }
@@ -70,12 +72,17 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--lin
 .mark-H { color: #1d4e89; font-weight: 700; }
 @media (max-width: 800px) {
   .shell { grid-template-columns: 1fr; }
-  aside { position: sticky; top: 0; }
+  aside { position: sticky; top: 0; z-index: 5; padding: 12px 14px; gap: 10px; }
+  .menu-btn { display: inline-flex; align-items: center; background: rgba(255,255,255,0.16); color: #f7f4ff; min-height: 40px; }
+  aside:not(.open) nav, aside:not(.open) .who { display: none; }
   nav { flex-direction: column; }
   nav details { width: 100%; }
   .who { margin-top: 0; }
   .grid2 { grid-template-columns: 1fr; }
-  main { padding: 16px; }
+  main { padding: 16px; min-width: 0; }
+  .cards { grid-template-columns: 1fr 1fr; }
+  .month-wrap, .ledger, table { max-width: 100%; }
+  table { display: block; overflow-x: auto; }
   input, select, button { font-size: 16px; min-height: 44px; }
   .form-grid, .inline, .filters, .stack, .search { flex-direction: column; align-items: stretch; }
   .check { display: flex; margin: 10px 0; font-size: 1rem; }

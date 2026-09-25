@@ -1,3 +1,22 @@
+const menuBtn = document.getElementById("menu-btn");
+const aside = document.querySelector("aside");
+if (menuBtn && aside) {
+  menuBtn.addEventListener("click", () => {
+    const open = aside.classList.toggle("open");
+    menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    menuBtn.textContent = open ? "Close" : "Menu";
+  });
+  aside.querySelectorAll("a").forEach((link) => {
+    link.addEventListener("click", () => {
+      if (window.matchMedia("(max-width: 800px)").matches) {
+        aside.classList.remove("open");
+        menuBtn.setAttribute("aria-expanded", "false");
+        menuBtn.textContent = "Menu";
+      }
+    });
+  });
+}
+
 document.querySelectorAll("nav details").forEach((item) => {
   item.addEventListener("toggle", () => {
     if (!item.open) return;
