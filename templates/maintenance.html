@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Maintenance watch</h1>
+<section class="cards">
+  {% for card in cards %}
+  <article class="status-{{ card.status }}">
+    <span>{{ card.vehicle.number }}</span>
+    <strong>{{ card.status }}</strong>
+    <p>{{ card.detail }}</p>
+    <a href="{{ url_for('vehicle_detail', vehicle_id=card.vehicle.id) }}">Open vehicle</a>
+  </article>
+  {% else %}<p>No assigned vehicle.</p>{% endfor %}
+</section>
+{% endblock %}

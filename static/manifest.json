@@ -1,0 +1,8 @@
+{
+  "name": "Janani Travels",
+  "short_name": "Janani",
+  "start_url": "/m",
+  "display": "standalone",
+  "background_color": "#f3efe4",
+  "theme_color": "#1d3c34"
+}

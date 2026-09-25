@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Alerts</h1>
+{% if rows %}
+<ul class="notes">
+  {% for row in rows %}
+  <li><strong>{{ row.title }}</strong><span>{{ row.kind }} · {{ row.created_at }}</span><p>{{ row.body }}</p></li>
+  {% endfor %}
+</ul>
+{% else %}<p>No alerts yet.</p>{% endif %}
+{% endblock %}

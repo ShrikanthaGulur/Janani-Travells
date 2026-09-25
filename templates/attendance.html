@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Attendance</h1>
+<p>P present, A absent, L leave, H half day. Each row is one driver for the whole month.</p>
+<form class="filters" method="get">
+  <label>Month<input type="month" name="month" value="{{ month }}"></label>
+  <button>Show month</button>
+</form>
+<div class="month-wrap">
+  <table class="month-sheet">
+    <tr>
+      <th>Driver</th>
+      {% for day in days %}<th>{{ day[8:] }}</th>{% endfor %}
+      <th>P</th><th>A</th><th>L</th><th>H</th>
+    </tr>
+    {% for item in sheet %}
+    <tr>
+      <td>{{ item.driver.name }}</td>
+      {% for cell in item.cells %}
+      <td class="mark-{{ cell }}">{{ cell or '·' }}</td>
+      {% endfor %}
+      <td>{{ item.counts.PRESENT }}</td>
+      <td>{{ item.counts.ABSENT }}</td>
+      <td>{{ item.counts.LEAVE }}</td>
+      <td>{{ item.counts.HALF }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+<h2>Mark {{ work_date }}</h2>
+<form class="filters" method="get">
+  <input type="hidden" name="month" value="{{ month }}">
+  <label>Date<input type="date" name="work_date" value="{{ work_date }}" min="{{ month }}-01" max="{{ days[-1] }}"></label>
+  <button>Load day</button>
+</form>
+<form method="post">
+  <input type="hidden" name="month" value="{{ month }}">
+  <input type="hidden" name="work_date" value="{{ work_date }}">
+  {% if can_edit %}
+  <table>
+    <tr><th>Driver</th><th>Status</th><th>In</th><th>Out</th><th>Note</th></tr>
+    {% for item in sheet %}
+    {% set mark = marked.get(item.driver.id) %}
+    <tr>
+      <td>{{ item.driver.name }}</td>
+      <td>
+        <select name="status_{{ item.driver.id }}">
+          <option value="">Unchanged</option>
+          {% for status in ['PRESENT','ABSENT','LEAVE','HALF'] %}
+          <option value="{{ status }}" {% if mark and mark.status==status %}selected{% endif %}>{{ status }}</option>
+          {% endfor %}
+        </select>
+      </td>
+      <td><input type="time" name="check_in_{{ item.driver.id }}" value="{{ mark.check_in if mark and mark.check_in else '' }}"></td>
+      <td><input type="time" name="check_out_{{ item.driver.id }}" value="{{ mark.check_out if mark and mark.check_out else '' }}"></td>
+      <td><input name="note_{{ item.driver.id }}" value="{{ mark.note if mark else '' }}"></td>
+    </tr>
+    {% endfor %}
+  </table>
+  <button>Save this day</button>
+  {% else %}
+  {% set mark = marked.get(sheet[0].driver.id) if sheet else none %}
+  <div class="form-grid">
+    <label>Status
+      <select name="status">
+        {% for status in ['PRESENT','ABSENT','LEAVE','HALF'] %}
+        <option {% if mark and mark.status==status %}selected{% endif %}>{{ status }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Check in<input type="time" name="check_in" value="{{ mark.check_in if mark and mark.check_in else '' }}"></label>
+    <label>Check out<input type="time" name="check_out" value="{{ mark.check_out if mark and mark.check_out else '' }}"></label>
+    <label>Note<input name="note" value="{{ mark.note if mark else '' }}"></label>
+    <button>Save my attendance</button>
+  </div>
+  {% endif %}
+</form>
+{% endblock %}

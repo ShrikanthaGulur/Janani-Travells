@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ driver.name }}</h1>
+<section class="cards">
+  <article><span>Monthly salary</span><strong>₹{{ '%.0f'|format(summary.monthly) }}</strong></article>
+  <article><span>Advance this month</span><strong>₹{{ '%.0f'|format(summary.advance_month) }}</strong></article>
+  <article><span>Remaining</span><strong>₹{{ '%.0f'|format(summary.remaining) }}</strong></article>
+</section>
+{% if vehicle %}
+<h2>Assigned vehicle</h2>
+<p><a href="{{ url_for('vehicle_detail', vehicle_id=vehicle.id) }}">{{ vehicle.number }}</a> · {{ vehicle.model }} · since {{ vehicle.start_date }}</p>
+<h2>Enter fuel and KM</h2>
+<form method="post" action="{{ url_for('fuel') }}" class="form-grid" id="fuel-form">
+  <input type="hidden" name="vehicle_id" value="{{ vehicle.id }}">
+  <label>Date<input type="date" name="entry_date" value="{{ today }}" required></label>
+  <label>Litres<input type="number" step="0.01" name="litres" required></label>
+  <label>Cost<input type="number" step="0.01" name="cost" required></label>
+  <label>Odometer KM<input type="number" step="0.1" name="km_reading" required></label>
+  <button>Save</button>
+</form>
+<p class="hint" id="offline-note"></p>
+<h2>Recent fuel</h2>
+<table>{% for row in fuels %}<tr><td>{{ row.entry_date }}</td><td>{{ row.litres }} L</td><td>{{ row.km_reading }} km</td></tr>{% endfor %}</table>
+<h2>Maintenance on this vehicle</h2>
+<table>{% for row in services %}<tr><td>{{ row.service_date }}</td><td>{{ row.service_type }}</td><td>₹{{ '%.0f'|format(row.cost) }}</td></tr>{% else %}<tr><td>No service records.</td></tr>{% endfor %}</table>
+{% else %}
+<p>No vehicle is assigned right now.</p>
+{% endif %}
+<p><a href="{{ url_for('driver_detail', driver_id=driver.id) }}">My profile</a></p>
+{% endblock %}

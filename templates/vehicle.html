@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block content %}
+<p><a href="{{ url_for('vehicles') if can_edit else url_for('driver_home') }}">Back</a></p>
+<h1>{{ vehicle.number }} <small>{{ vehicle.model }} · {{ vehicle.vtype }}</small></h1>
+<p>Bought {{ vehicle.purchase_date or '—' }} for ₹{{ '%.0f'|format(vehicle.purchase_price) }}. Mileage band {{ vehicle.min_mileage }}–{{ vehicle.max_mileage }} km/l. Service every {{ vehicle.service_interval_km|int }} km or {{ vehicle.service_interval_days }} days.</p>
+{% if can_edit %}
+<details open><summary>Vehicle details</summary>
+<form method="post" class="form-grid">
+  <input type="hidden" name="action" value="profile">
+  <label>Model<input name="model" value="{{ vehicle.model }}"></label>
+  <label>Type<select name="vtype"><option {% if vehicle.vtype=='COMMERCIAL' %}selected{% endif %}>COMMERCIAL</option><option {% if vehicle.vtype=='PASSENGER' %}selected{% endif %}>PASSENGER</option></select></label>
+  <label>Purchase date<input type="date" name="purchase_date" value="{{ vehicle.purchase_date or '' }}"></label>
+  <label>Price<input type="number" step="0.01" name="purchase_price" value="{{ vehicle.purchase_price }}"></label>
+  <label>Min km/l<input type="number" step="0.1" name="min_mileage" value="{{ vehicle.min_mileage }}"></label>
+  <label>Max km/l<input type="number" step="0.1" name="max_mileage" value="{{ vehicle.max_mileage }}"></label>
+  <label>Service km<input type="number" name="service_interval_km" value="{{ vehicle.service_interval_km }}"></label>
+  <label>Service days<input type="number" name="service_interval_days" value="{{ vehicle.service_interval_days }}"></label>
+  <button>Save details</button>
+</form>
+</details>
+{% endif %}
+<h2>Documents</h2>
+<table>
+  <tr><th>Kind</th><th>Expiry</th><th>File</th></tr>
+  {% for d in docs %}
+  <tr><td>{{ d.kind }}</td><td>{{ d.expiry_date or '—' }}</td><td>{% if d.file_path %}<a href="{{ url_for('files', name=d.file_path) }}">Open</a>{% else %}—{% endif %}</td></tr>
+  {% endfor %}
+</table>
+{% if can_edit %}
+<form method="post" enctype="multipart/form-data" class="inline">
+  <input type="hidden" name="action" value="document">
+  <select name="kind">{% for k in kinds %}<option>{{ k }}</option>{% endfor %}</select>
+  <input type="date" name="expiry_date">
+  <input type="file" name="file">
+  <button>Add document</button>
+</form>
+<form method="post" enctype="multipart/form-data" class="inline">
+  <input type="hidden" name="action" value="photo">
+  <input type="file" name="file" required>
+  <button>Add photo</button>
+</form>
+{% endif %}
+{% if photos %}<p>{% for p in photos %}<a href="{{ url_for('files', name=p.file_path) }}">Photo {{ loop.index }}</a> {% endfor %}</p>{% endif %}
+<h2>Company assignment</h2>
+<table>
+  <tr><th>Company</th><th>From</th><th>To</th></tr>
+  {% for row in company_history %}<tr><td>{{ row.name }}</td><td>{{ row.start_date }}</td><td>{{ row.end_date or 'Current' }}</td></tr>{% endfor %}
+</table>
+{% if can_edit %}
+<form method="post" class="inline">
+  <input type="hidden" name="action" value="company">
+  <select name="company_id">{% for c in companies %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select>
+  <input type="date" name="start_date" required>
+  <input type="date" name="end_date">
+  <button>Assign company</button>
+</form>
+{% endif %}
+<h2>Mileage</h2>
+<table>
+  <tr><th>Date</th><th>Start</th><th>End</th><th>Litres</th><th>km/l</th><th>Alert</th></tr>
+  {% for row in logs %}<tr><td>{{ row.log_date }}</td><td>{{ row.start_km }}</td><td>{{ row.end_km }}</td><td>{{ row.fuel_litres }}</td><td>{{ row.kmpl }}</td><td>{{ row.alert or '—' }}</td></tr>{% endfor %}
+</table>
+{% if can_edit %}
+<form method="post" class="inline">
+  <input type="hidden" name="action" value="mileage">
+  <input type="date" name="log_date" value="{{ today }}" required>
+  <input type="number" step="0.1" name="start_km" placeholder="Start KM" required>
+  <input type="number" step="0.1" name="end_km" placeholder="End KM" required>
+  <input type="number" step="0.01" name="fuel_litres" placeholder="Litres" required>
+  <input name="note" placeholder="Note">
+  <button>Log mileage</button>
+</form>
+{% endif %}
+<h2>Fuel</h2>
+<table>
+  <tr><th>Date</th><th>Litres</th><th>Cost</th><th>KM</th></tr>
+  {% for row in fuels %}<tr><td>{{ row.entry_date }}</td><td>{{ row.litres }}</td><td>₹{{ '%.0f'|format(row.cost) }}</td><td>{{ row.km_reading }}</td></tr>{% endfor %}
+</table>
+<h2>Maintenance</h2>
+<table>
+  <tr><th>Type</th><th>Date</th><th>KM</th><th>Cost</th><th>Notes</th></tr>
+  {% for row in services %}<tr><td>{{ row.service_type }}</td><td>{{ row.service_date }}</td><td>{{ row.km_reading or '—' }}</td><td>₹{{ '%.0f'|format(row.cost) }}</td><td>{{ row.notes }}</td></tr>{% endfor %}
+</table>
+{% if can_edit %}
+<form method="post" class="inline">
+  <input type="hidden" name="action" value="service">
+  <input name="service_type" placeholder="Oil Change" required>
+  <input type="date" name="service_date" value="{{ today }}" required>
+  <input type="number" step="0.1" name="km_reading" placeholder="KM">
+  <input type="number" step="0.01" name="cost" placeholder="Cost">
+  <input name="notes" placeholder="Notes">
+  <button>Add service</button>
+</form>
+{% endif %}
+<h2>Tyres</h2>
+<table>
+  <tr><th>Number</th><th>Position</th><th>Installed</th><th>Removed</th></tr>
+  {% for row in tyres %}<tr><td>{{ row.tyre_number }}</td><td>{{ row.position }}</td><td>{{ row.installed_on }}</td><td>{{ row.removed_on or 'In use' }}</td></tr>{% endfor %}
+</table>
+{% if can_edit %}
+<form method="post" class="inline">
+  <input type="hidden" name="action" value="tyre">
+  <input name="tyre_number" placeholder="Tyre number" required>
+  <select name="position">{% for p in positions %}<option>{{ p }}</option>{% endfor %}</select>
+  <input type="date" name="installed_on" value="{{ today }}" required>
+  <select name="replace_id"><option value="">New, do not close another</option>{% for row in tyres if not row.removed_on %}<option value="{{ row.id }}">Replace {{ row.tyre_number }}</option>{% endfor %}</select>
+  <button>Save tyre</button>
+</form>
+{% endif %}
+<h2>Accessories</h2>
+<form method="post">
+  <input type="hidden" name="action" value="accessories">
+  {% for row in accessories %}
+  <label class="check"><input type="checkbox" name="present" value="{{ row.id }}" {% if row.present %}checked{% endif %} {% if not can_edit %}disabled{% endif %}> {{ row.name }}</label>
+  {% endfor %}
+  {% if can_edit %}<button>Save checklist</button>{% endif %}
+</form>
+{% endblock %}

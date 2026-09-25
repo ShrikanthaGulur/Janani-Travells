@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Companies</h1>
+<table>
+  <tr><th>Name</th><th>Contact</th><th>Address</th><th>Active vehicles</th></tr>
+  {% for c in companies %}<tr><td>{{ c.name }}</td><td>{{ c.contact }}</td><td>{{ c.address }}</td><td>{{ c.active_vehicles }}</td></tr>{% endfor %}
+</table>
+<h2>Add a company</h2>
+<form method="post" class="form-grid">
+  <label>Name<input name="name" required></label>
+  <label>Contact<input name="contact"></label>
+  <label>Address<input name="address"></label>
+  <button>Save company</button>
+</form>
+{% endblock %}

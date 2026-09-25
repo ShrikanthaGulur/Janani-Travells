@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Janani Travels{% endblock %}
+{% block bare %}
+<section class="login">
+  <div>
+    <p class="eyebrow">Phone OTP</p>
+    <h1>Sign in to Janani Travels</h1>
+    <p class="lede">Admin, manager, and driver accounts use the registered phone number. SMS is not connected yet, so the one-time code appears here for local use.</p>
+    <form method="post" class="stack">
+      <label>Phone number<input name="phone" value="{{ phone }}" required inputmode="numeric"></label>
+      <button name="action" value="request">Send OTP</button>
+      {% if dev_otp %}<p class="otp">Development OTP: <strong>{{ dev_otp }}</strong></p>{% endif %}
+      <label>One-time code<input name="code" inputmode="numeric" maxlength="6"></label>
+      <button name="action" value="verify" class="secondary">Verify and enter</button>
+    </form>
+    <div class="demos">
+      <button type="button" data-phone="9000000001">Admin</button>
+      <button type="button" data-phone="9000000002">Manager</button>
+      <button type="button" data-phone="9000000011">Driver Ravi</button>
+    </div>
+  </div>
+</section>
+{% endblock %}

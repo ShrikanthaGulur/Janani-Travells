@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Today on the fleet</h1>
+<section class="cards">
+  <article><span>Vehicles</span><strong>{{ stats.vehicles }}</strong></article>
+  <article><span>Drivers</span><strong>{{ stats.drivers }}</strong></article>
+  <article><span>Companies</span><strong>{{ stats.companies }}</strong></article>
+  <article><span>Fuel spend this month</span><strong>₹{{ '%.0f'|format(stats.fuel_month) }}</strong></article>
+</section>
+<div class="grid2">
+  <section>
+    <h2>Documents inside 30 days</h2>
+    {% if expiring %}
+    <table>
+      <tr><th>Vehicle</th><th>Document</th><th>Expiry</th></tr>
+      {% for row in expiring %}
+      <tr><td>{{ row.number }}</td><td>{{ row.kind }}</td><td>{{ row.expiry_date }}</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}<p>No documents are inside the alert window.</p>{% endif %}
+  </section>
+  <section>
+    <h2>Mileage flags</h2>
+    {% if mileage_flags %}
+    <table>
+      <tr><th>Vehicle</th><th>Date</th><th>km/l</th><th>Flag</th></tr>
+      {% for row in mileage_flags %}
+      <tr><td>{{ row.number }}</td><td>{{ row.log_date }}</td><td>{{ row.kmpl }}</td><td>{{ row.alert }}</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}<p>No mileage alerts yet.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Janani Travels{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+</head>
+<body>
+{% if me %}
+<div class="shell">
+  <aside>
+    <div class="brand">Janani Travels<small>Transport desk</small></div>
+    <nav>
+      {% if me.role != 'DRIVER' %}
+      <a href="{{ url_for('attendance') }}">Attendance</a>
+      <a href="{{ url_for('advances') }}">Advances</a>
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('drivers') }}">Drivers</a>
+      <a href="{{ url_for('vehicles') }}">Vehicles</a>
+      <a href="{{ url_for('companies') }}">Companies</a>
+      <a href="{{ url_for('maintenance') }}">Maintenance</a>
+      <a href="{{ url_for('fuel') }}">Fuel</a>
+      <a href="{{ url_for('reports') }}">Reports</a>
+      {% else %}
+      <a href="{{ url_for('attendance') }}">Attendance</a>
+      <a href="{{ url_for('advances') }}">My advances</a>
+      <a href="{{ url_for('driver_home') }}">My vehicle</a>
+      <a href="{{ url_for('fuel') }}">Fuel &amp; KM</a>
+      {% endif %}
+      <a href="{{ url_for('notifications') }}">Alerts{% if unread %} <span class="badge">{{ unread }}</span>{% endif %}</a>
+      {% if me.role == 'ADMIN' %}<a href="{{ url_for('audit_page') }}">Audit</a>{% endif %}
+    </nav>
+    <div class="who">{{ me.name }}<br><span>{{ me.role }}</span><br><a href="{{ url_for('logout') }}">Sign out</a></div>
+  </aside>
+  <main>
+    <form class="search" action="{{ url_for('search') }}" method="get">
+      <input name="q" placeholder="Search driver or vehicle number" value="{{ request.args.get('q','') }}">
+      <button>Search</button>
+    </form>
+    {% with messages = get_flashed_messages() %}
+      {% for message in messages %}<div class="flash">{{ message }}</div>{% endfor %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+{% else %}
+{% with messages = get_flashed_messages() %}
+  {% for message in messages %}<div class="flash solo">{{ message }}</div>{% endfor %}
+{% endwith %}
+{% block bare %}{% endblock %}
+{% endif %}
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,1207 @@
+import calendar
+import csv
+import io
+import os
+import random
+import zipfile
+from datetime import date, datetime, timedelta
+from functools import wraps
+from pathlib import Path
+
+from flask import (
+    Flask,
+    abort,
+    flash,
+    g,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    session,
+    url_for,
+)
+from werkzeug.utils import secure_filename
+
+from db import UPLOAD_DIR, audit, connect, init_db, refresh_notifications
+
+ALLOWED = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+DOC_KINDS = ["RC", "Insurance", "FC", "Permit", "Pollution"]
+POSITIONS = ["Front Left", "Front Right", "Rear Left", "Rear Right", "Stepney"]
+
+
+def create_app():
+    app = Flask(__name__)
+    app.secret_key = os.environ.get("TMS_SECRET", "tms-dev-secret-change-me")
+    app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
+    init_db()
+
+    @app.before_request
+    def open_db():
+        g.db = connect()
+        if request.endpoint not in {"static", None}:
+            refresh_notifications(g.db)
+            g.db.commit()
+
+    @app.teardown_request
+    def close_db(_exc):
+        db = g.pop("db", None)
+        if db is not None:
+            db.close()
+
+    def current_user():
+        uid = session.get("uid")
+        if not uid:
+            return None
+        return g.db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+
+    def login_required(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            user = current_user()
+            if not user:
+                return redirect(url_for("login"))
+            g.user = user
+            return fn(*args, **kwargs)
+        return wrapper
+
+    def roles(*allowed):
+        def deco(fn):
+            @wraps(fn)
+            @login_required
+            def wrapper(*args, **kwargs):
+                if g.user["role"] not in allowed:
+                    abort(403)
+                return fn(*args, **kwargs)
+            return wrapper
+        return deco
+
+    @app.context_processor
+    def inject():
+        user = None
+        unread = 0
+        if session.get("uid"):
+            try:
+                user = g.db.execute("SELECT * FROM users WHERE id=?", (session["uid"],)).fetchone()
+                if user:
+                    unread = g.db.execute(
+                        "SELECT COUNT(*) AS c FROM notifications WHERE user_id=? AND is_read=0",
+                        (user["id"],),
+                    ).fetchone()["c"]
+            except Exception:
+                user = None
+        return {"me": user, "unread": unread}
+
+    def save_upload(file):
+        if not file or not file.filename:
+            return None
+        ext = Path(file.filename).suffix.lower()
+        if ext not in ALLOWED:
+            flash("Upload a PDF or image file.")
+            return None
+        name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{secure_filename(file.filename)}"
+        file.save(UPLOAD_DIR / name)
+        return name
+
+    def month_start():
+        return date.today().replace(day=1).isoformat()
+
+    def salary_summary(driver, month=None):
+        month = month or date.today().strftime("%Y-%m")
+        taken_all = g.db.execute(
+            "SELECT COALESCE(SUM(amount),0) AS s FROM advances WHERE driver_id=?",
+            (driver["id"],),
+        ).fetchone()["s"]
+        taken_month = g.db.execute(
+            "SELECT COALESCE(SUM(amount),0) AS s FROM advances WHERE driver_id=? AND paid_on LIKE ?",
+            (driver["id"], month + "%"),
+        ).fetchone()["s"]
+        return {
+            "monthly": driver["monthly_salary"],
+            "advance_all": taken_all,
+            "advance_month": taken_month,
+            "remaining": driver["monthly_salary"] - taken_month,
+        }
+
+    def salary_ledger(driver, month):
+        balance = driver["monthly_salary"]
+        lines = []
+        rows = g.db.execute(
+            "SELECT * FROM advances WHERE driver_id=? AND paid_on LIKE ? ORDER BY paid_on, id",
+            (driver["id"], month + "%"),
+        ).fetchall()
+        for row in rows:
+            balance -= row["amount"]
+            lines.append({"paid_on": row["paid_on"], "amount": row["amount"], "note": row["note"], "balance": balance})
+        return lines
+
+    def assigned_vehicle(driver_id):
+        return g.db.execute(
+            """SELECT v.*, a.start_date FROM driver_assignments a
+               JOIN vehicles v ON v.id=a.vehicle_id
+               WHERE a.driver_id=? AND a.end_date IS NULL
+               ORDER BY a.start_date DESC LIMIT 1""",
+            (driver_id,),
+        ).fetchone()
+
+    def mileage_alert(vehicle, kmpl):
+        if kmpl < vehicle["min_mileage"]:
+            return "LOW"
+        if kmpl > vehicle["max_mileage"]:
+            return "HIGH"
+        return None
+
+    def record_mileage(vehicle, log_date, start_km, end_km, litres, note, user_id):
+        if end_km <= start_km or litres <= 0:
+            flash("End KM must be greater than start KM, and fuel must be above zero.")
+            return
+        kmpl = (end_km - start_km) / litres
+        flag = mileage_alert(vehicle, kmpl)
+        g.db.execute(
+            """INSERT INTO mileage_logs
+            (vehicle_id, log_date, start_km, end_km, fuel_litres, kmpl, alert, note, created_by)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (vehicle["id"], log_date, start_km, end_km, litres, round(kmpl, 2), flag, note, user_id),
+        )
+        if flag == "LOW":
+            flash(f"Low mileage {kmpl:.2f} km/l on {vehicle['number']}. Check the vehicle or the entry.")
+        elif flag == "HIGH":
+            flash(f"High mileage {kmpl:.2f} km/l on {vehicle['number']}. Confirm the reading.")
+
+    @app.route("/")
+    def home():
+        if not session.get("uid"):
+            return redirect(url_for("login"))
+        user = current_user()
+        if user and user["role"] == "DRIVER":
+            return redirect(url_for("driver_home"))
+        return redirect(url_for("dashboard"))
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        dev_otp = session.get("dev_otp")
+        phone = session.get("otp_phone", "")
+        if request.method == "POST":
+            action = request.form.get("action")
+            phone = request.form.get("phone", "").strip()
+            user = g.db.execute("SELECT * FROM users WHERE phone=?", (phone,)).fetchone()
+            if action == "request":
+                if not user:
+                    flash("That phone number is not registered.")
+                else:
+                    code = f"{random.randint(0, 999999):06d}"
+                    expires = (datetime.now() + timedelta(minutes=5)).isoformat(timespec="seconds")
+                    g.db.execute(
+                        "INSERT INTO otp_codes (phone, code, expires_at) VALUES (?,?,?)",
+                        (phone, code, expires),
+                    )
+                    g.db.commit()
+                    session["otp_phone"] = phone
+                    session["dev_otp"] = code
+                    flash("OTP sent. SMS is not configured, so the development code is shown below.")
+                return redirect(url_for("login"))
+            code = request.form.get("code", "").strip()
+            row = g.db.execute(
+                """SELECT * FROM otp_codes WHERE phone=? AND code=? AND used=0
+                   ORDER BY id DESC LIMIT 1""",
+                (phone, code),
+            ).fetchone()
+            if not user or not row or row["expires_at"] < datetime.now().isoformat(timespec="seconds"):
+                flash("OTP is invalid or expired.")
+                return redirect(url_for("login"))
+            g.db.execute("UPDATE otp_codes SET used=1 WHERE id=?", (row["id"],))
+            audit(g.db, user["id"], "LOGIN", "user", user["id"], user["phone"])
+            g.db.commit()
+            session["uid"] = user["id"]
+            session.pop("dev_otp", None)
+            return redirect(url_for("home"))
+        return render_template("login.html", dev_otp=dev_otp, phone=phone)
+
+    @app.route("/logout")
+    def logout():
+        session.clear()
+        return redirect(url_for("login"))
+
+    def save_attendance(driver_id, work_date, status, check_in, check_out, note):
+        if status not in {"PRESENT", "ABSENT", "LEAVE", "HALF"}:
+            flash("Choose a valid attendance status.")
+            return
+        g.db.execute(
+            """INSERT INTO attendance (driver_id, work_date, status, check_in, check_out, note)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(driver_id, work_date) DO UPDATE SET
+               status=excluded.status, check_in=excluded.check_in, check_out=excluded.check_out, note=excluded.note""",
+            (driver_id, work_date, status, check_in or None, check_out or None, note or ""),
+        )
+        audit(g.db, g.user["id"], "UPSERT", "attendance", driver_id, f"{work_date} {status}")
+
+    def month_days(month):
+        year, mon = [int(part) for part in month.split("-")]
+        return [date(year, mon, day).isoformat() for day in range(1, calendar.monthrange(year, mon)[1] + 1)]
+
+    def month_sheet(drivers, month):
+        days = month_days(month)
+        marks = {
+            (row["driver_id"], row["work_date"]): row["status"]
+            for row in g.db.execute("SELECT driver_id, work_date, status FROM attendance WHERE work_date LIKE ?", (month + "%",))
+        }
+        short = {"PRESENT": "P", "ABSENT": "A", "LEAVE": "L", "HALF": "H"}
+        sheet = []
+        for driver in drivers:
+            cells = []
+            counts = {"PRESENT": 0, "ABSENT": 0, "LEAVE": 0, "HALF": 0}
+            for day in days:
+                status = marks.get((driver["id"], day))
+                if status:
+                    counts[status] += 1
+                cells.append(short.get(status, ""))
+            sheet.append({"driver": driver, "cells": cells, "counts": counts})
+        return days, sheet
+
+    @app.route("/attendance", methods=["GET", "POST"])
+    @login_required
+    def attendance():
+        month = request.values.get("month") or date.today().strftime("%Y-%m")
+        work_date = request.values.get("work_date") or date.today().isoformat()
+        if not work_date.startswith(month):
+            work_date = month + "-01"
+        if request.method == "POST":
+            if g.user["role"] == "DRIVER":
+                save_attendance(
+                    g.user["driver_id"],
+                    work_date,
+                    request.form.get("status", "PRESENT"),
+                    request.form.get("check_in"),
+                    request.form.get("check_out"),
+                    request.form.get("note"),
+                )
+            else:
+                for driver in g.db.execute("SELECT id FROM drivers"):
+                    status = request.form.get(f"status_{driver['id']}")
+                    if not status:
+                        continue
+                    save_attendance(
+                        driver["id"],
+                        work_date,
+                        status,
+                        request.form.get(f"check_in_{driver['id']}"),
+                        request.form.get(f"check_out_{driver['id']}"),
+                        request.form.get(f"note_{driver['id']}"),
+                    )
+            g.db.commit()
+            flash("Attendance saved.")
+            return redirect(url_for("attendance", month=work_date[:7], work_date=work_date))
+        if g.user["role"] == "DRIVER":
+            drivers = g.db.execute("SELECT * FROM drivers WHERE id=?", (g.user["driver_id"],)).fetchall()
+        else:
+            drivers = g.db.execute("SELECT * FROM drivers ORDER BY name").fetchall()
+        days, sheet = month_sheet(drivers, month)
+        marked = {
+            row["driver_id"]: row
+            for row in g.db.execute("SELECT * FROM attendance WHERE work_date=?", (work_date,))
+        }
+        return render_template(
+            "attendance.html",
+            month=month,
+            work_date=work_date,
+            days=days,
+            sheet=sheet,
+            marked=marked,
+            can_edit=g.user["role"] in {"ADMIN", "MANAGER"},
+        )
+
+    @app.route("/advances", methods=["GET", "POST"])
+    @login_required
+    def advances():
+        if request.method == "POST":
+            if g.user["role"] not in {"ADMIN", "MANAGER"}:
+                abort(403)
+            driver_id = int(request.form["driver_id"])
+            driver = g.db.execute("SELECT * FROM drivers WHERE id=?", (driver_id,)).fetchone()
+            if not driver:
+                abort(404)
+            if request.form.get("action") == "salary":
+                salary = float(request.form["monthly_salary"])
+                g.db.execute("UPDATE drivers SET monthly_salary=? WHERE id=?", (salary, driver_id))
+                audit(g.db, g.user["id"], "UPDATE", "driver", driver_id, f"salary {salary}")
+                g.db.commit()
+                flash(f"{driver['name']}'s monthly salary is now ₹{salary:,.0f}.")
+                return redirect(url_for("advances", month=request.form.get("month") or date.today().strftime("%Y-%m")))
+            amount = float(request.form["amount"])
+            paid_on = request.form["paid_on"]
+            g.db.execute(
+                "INSERT INTO advances (driver_id, amount, paid_on, note) VALUES (?,?,?,?)",
+                (driver_id, amount, paid_on, request.form.get("note", "")),
+            )
+            deducted = g.db.execute(
+                "SELECT COALESCE(SUM(amount),0) s FROM advances WHERE driver_id=? AND paid_on LIKE ?",
+                (driver_id, paid_on[:7] + "%"),
+            ).fetchone()["s"]
+            balance = driver["monthly_salary"] - deducted
+            audit(g.db, g.user["id"], "CREATE", "advance", driver_id, str(amount))
+            g.db.commit()
+            flash(f"₹{amount:,.0f} deducted from {driver['name']}'s ₹{driver['monthly_salary']:,.0f} salary. Balance payable is ₹{balance:,.0f}.")
+            return redirect(url_for("advances", month=paid_on[:7]))
+        month = request.args.get("month") or date.today().strftime("%Y-%m")
+        if g.user["role"] == "DRIVER":
+            people = g.db.execute("SELECT * FROM drivers WHERE id=?", (g.user["driver_id"],)).fetchall()
+            can_edit = False
+        else:
+            people = g.db.execute("SELECT * FROM drivers ORDER BY name").fetchall()
+            can_edit = True
+        ledgers = []
+        for driver in people:
+            summary = salary_summary(driver, month)
+            ledgers.append({"driver": driver, "summary": summary, "lines": salary_ledger(driver, month)})
+        return render_template("advances.html", ledgers=ledgers, month=month, can_edit=can_edit, today=date.today().isoformat())
+
+    @app.route("/dashboard")
+    @roles("ADMIN", "MANAGER")
+    def dashboard():
+        stats = {
+            "vehicles": g.db.execute("SELECT COUNT(*) c FROM vehicles").fetchone()["c"],
+            "drivers": g.db.execute("SELECT COUNT(*) c FROM drivers").fetchone()["c"],
+            "companies": g.db.execute("SELECT COUNT(*) c FROM companies").fetchone()["c"],
+            "fuel_month": g.db.execute(
+                "SELECT COALESCE(SUM(cost),0) s FROM fuel_entries WHERE entry_date>=?",
+                (month_start(),),
+            ).fetchone()["s"],
+        }
+        expiring = g.db.execute(
+            """SELECT d.kind, d.expiry_date, v.number FROM documents d
+               JOIN vehicles v ON v.id=d.vehicle_id
+               WHERE d.expiry_date IS NOT NULL AND d.expiry_date<=?
+               ORDER BY d.expiry_date""",
+            ((date.today() + timedelta(days=30)).isoformat(),),
+        ).fetchall()
+        mileage_flags = g.db.execute(
+            """SELECT m.*, v.number FROM mileage_logs m JOIN vehicles v ON v.id=m.vehicle_id
+               WHERE m.alert IS NOT NULL ORDER BY m.log_date DESC LIMIT 8"""
+        ).fetchall()
+        return render_template("dashboard.html", stats=stats, expiring=expiring, mileage_flags=mileage_flags)
+
+    @app.route("/drivers", methods=["GET", "POST"])
+    @roles("ADMIN", "MANAGER")
+    def drivers():
+        if request.method == "POST":
+            phone = request.form["phone"].strip()
+            if g.db.execute("SELECT id FROM drivers WHERE phone=?", (phone,)).fetchone():
+                flash("A driver with that phone already exists.")
+            else:
+                cur = g.db.execute(
+                    """INSERT INTO drivers (name, phone, address, dl_number, dl_expiry, monthly_salary)
+                       VALUES (?,?,?,?,?,?)""",
+                    (
+                        request.form["name"].strip(),
+                        phone,
+                        request.form.get("address", "").strip(),
+                        request.form.get("dl_number", "").strip(),
+                        request.form.get("dl_expiry") or None,
+                        float(request.form.get("monthly_salary") or 0),
+                    ),
+                )
+                driver_id = cur.lastrowid
+                g.db.execute(
+                    "INSERT INTO users (phone, name, role, driver_id) VALUES (?,?, 'DRIVER', ?)",
+                    (phone, request.form["name"].strip(), driver_id),
+                )
+                copy = save_upload(request.files.get("dl_copy"))
+                if copy:
+                    g.db.execute("UPDATE drivers SET dl_copy=? WHERE id=?", (copy, driver_id))
+                audit(g.db, g.user["id"], "CREATE", "driver", driver_id, request.form["name"])
+                g.db.commit()
+                flash("Driver added. They can sign in with this phone number.")
+            return redirect(url_for("drivers"))
+        q = request.args.get("q", "").strip()
+        sql = "SELECT * FROM drivers"
+        args = []
+        if q:
+            sql += " WHERE name LIKE ? OR phone LIKE ? OR dl_number LIKE ?"
+            args = [f"%{q}%", f"%{q}%", f"%{q}%"]
+        sql += " ORDER BY name"
+        rows = g.db.execute(sql, args).fetchall()
+        return render_template("drivers.html", drivers=rows, q=q)
+
+    @app.route("/drivers/<int:driver_id>", methods=["GET", "POST"])
+    @login_required
+    def driver_detail(driver_id):
+        if g.user["role"] == "DRIVER" and g.user["driver_id"] != driver_id:
+            abort(403)
+        driver = g.db.execute("SELECT * FROM drivers WHERE id=?", (driver_id,)).fetchone()
+        if not driver:
+            abort(404)
+        if request.method == "POST" and g.user["role"] in {"ADMIN", "MANAGER"}:
+            action = request.form.get("action")
+            if action == "profile":
+                copy = save_upload(request.files.get("dl_copy"))
+                g.db.execute(
+                    """UPDATE drivers SET name=?, phone=?, address=?, dl_number=?, dl_expiry=?, monthly_salary=?
+                       WHERE id=?""",
+                    (
+                        request.form["name"].strip(),
+                        request.form["phone"].strip(),
+                        request.form.get("address", "").strip(),
+                        request.form.get("dl_number", "").strip(),
+                        request.form.get("dl_expiry") or None,
+                        float(request.form.get("monthly_salary") or 0),
+                        driver_id,
+                    ),
+                )
+                if copy:
+                    g.db.execute("UPDATE drivers SET dl_copy=? WHERE id=?", (copy, driver_id))
+                g.db.execute(
+                    "UPDATE users SET name=?, phone=? WHERE driver_id=?",
+                    (request.form["name"].strip(), request.form["phone"].strip(), driver_id),
+                )
+                audit(g.db, g.user["id"], "UPDATE", "driver", driver_id, "profile")
+                flash("Driver profile updated.")
+            elif action == "advance":
+                g.db.execute(
+                    "INSERT INTO advances (driver_id, amount, paid_on, note) VALUES (?,?,?,?)",
+                    (driver_id, float(request.form["amount"]), request.form["paid_on"], request.form.get("note", "")),
+                )
+                audit(g.db, g.user["id"], "CREATE", "advance", driver_id, request.form["amount"])
+                flash("Advance recorded.")
+            elif action == "assign":
+                vehicle_id = int(request.form["vehicle_id"])
+                start = request.form["start_date"]
+                g.db.execute(
+                    "UPDATE driver_assignments SET end_date=? WHERE driver_id=? AND end_date IS NULL AND start_date<?",
+                    (start, driver_id, start),
+                )
+                g.db.execute(
+                    "UPDATE driver_assignments SET end_date=? WHERE vehicle_id=? AND end_date IS NULL AND start_date<?",
+                    (start, vehicle_id, start),
+                )
+                g.db.execute(
+                    "INSERT INTO driver_assignments (driver_id, vehicle_id, start_date) VALUES (?,?,?)",
+                    (driver_id, vehicle_id, start),
+                )
+                audit(g.db, g.user["id"], "ASSIGN", "driver", driver_id, str(vehicle_id))
+                flash("Driver assigned to the vehicle.")
+            g.db.commit()
+            return redirect(url_for("driver_detail", driver_id=driver_id))
+        driver = g.db.execute("SELECT * FROM drivers WHERE id=?", (driver_id,)).fetchone()
+        advances = g.db.execute(
+            "SELECT * FROM advances WHERE driver_id=? ORDER BY paid_on DESC", (driver_id,)
+        ).fetchall()
+        history = g.db.execute(
+            """SELECT a.*, v.number, v.model FROM driver_assignments a
+               JOIN vehicles v ON v.id=a.vehicle_id
+               WHERE a.driver_id=? ORDER BY a.start_date DESC""",
+            (driver_id,),
+        ).fetchall()
+        vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
+        return render_template(
+            "driver.html",
+            driver=driver,
+            advances=advances,
+            history=history,
+            vehicles=vehicles,
+            summary=salary_summary(driver),
+            can_edit=g.user["role"] in {"ADMIN", "MANAGER"},
+        )
+
+    @app.route("/vehicles", methods=["GET", "POST"])
+    @roles("ADMIN", "MANAGER")
+    def vehicles():
+        if request.method == "POST":
+            number = request.form["number"].strip().upper()
+            if g.db.execute("SELECT id FROM vehicles WHERE number=?", (number,)).fetchone():
+                flash("That vehicle number already exists.")
+            else:
+                cur = g.db.execute(
+                    """INSERT INTO vehicles
+                    (number, model, vtype, purchase_date, purchase_price, min_mileage, max_mileage, service_interval_km, service_interval_days)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (
+                        number,
+                        request.form["model"].strip(),
+                        request.form["vtype"],
+                        request.form.get("purchase_date") or None,
+                        float(request.form.get("purchase_price") or 0),
+                        float(request.form.get("min_mileage") or 4),
+                        float(request.form.get("max_mileage") or 18),
+                        float(request.form.get("service_interval_km") or 5000),
+                        int(request.form.get("service_interval_days") or 90),
+                    ),
+                )
+                vid = cur.lastrowid
+                for name in ["Stepney", "Spanner", "Jack", "Jack Rod", "Music System"]:
+                    g.db.execute(
+                        "INSERT INTO accessories (vehicle_id, name, present, checked_on) VALUES (?,?,0,?)",
+                        (vid, name, date.today().isoformat()),
+                    )
+                audit(g.db, g.user["id"], "CREATE", "vehicle", vid, number)
+                g.db.commit()
+                flash("Vehicle added.")
+            return redirect(url_for("vehicles"))
+        vtype = request.args.get("vtype", "")
+        company_id = request.args.get("company_id", "")
+        q = request.args.get("q", "").strip()
+        sql = """SELECT v.*,
+                 (SELECT c.name FROM company_assignments ca JOIN companies c ON c.id=ca.company_id
+                  WHERE ca.vehicle_id=v.id AND ca.end_date IS NULL LIMIT 1) AS company_name
+                 FROM vehicles v WHERE 1=1"""
+        args = []
+        if vtype:
+            sql += " AND v.vtype=?"
+            args.append(vtype)
+        if q:
+            sql += " AND (v.number LIKE ? OR v.model LIKE ?)"
+            args.extend([f"%{q}%", f"%{q}%"])
+        if company_id:
+            sql += """ AND EXISTS (SELECT 1 FROM company_assignments ca
+                      WHERE ca.vehicle_id=v.id AND ca.company_id=? AND ca.end_date IS NULL)"""
+            args.append(company_id)
+        sql += " ORDER BY v.number"
+        rows = g.db.execute(sql, args).fetchall()
+        companies = g.db.execute("SELECT * FROM companies ORDER BY name").fetchall()
+        return render_template("vehicles.html", vehicles=rows, companies=companies, q=q, vtype=vtype, company_id=company_id)
+
+    @app.route("/vehicles/<int:vehicle_id>", methods=["GET", "POST"])
+    @login_required
+    def vehicle_detail(vehicle_id):
+        vehicle = g.db.execute("SELECT * FROM vehicles WHERE id=?", (vehicle_id,)).fetchone()
+        if not vehicle:
+            abort(404)
+        if g.user["role"] == "DRIVER":
+            own = assigned_vehicle(g.user["driver_id"])
+            if not own or own["id"] != vehicle_id:
+                abort(403)
+        if request.method == "POST" and g.user["role"] in {"ADMIN", "MANAGER"}:
+            action = request.form.get("action")
+            if action == "profile":
+                g.db.execute(
+                    """UPDATE vehicles SET model=?, vtype=?, purchase_date=?, purchase_price=?,
+                       min_mileage=?, max_mileage=?, service_interval_km=?, service_interval_days=? WHERE id=?""",
+                    (
+                        request.form["model"].strip(),
+                        request.form["vtype"],
+                        request.form.get("purchase_date") or None,
+                        float(request.form.get("purchase_price") or 0),
+                        float(request.form.get("min_mileage") or 4),
+                        float(request.form.get("max_mileage") or 18),
+                        float(request.form.get("service_interval_km") or 5000),
+                        int(request.form.get("service_interval_days") or 90),
+                        vehicle_id,
+                    ),
+                )
+                audit(g.db, g.user["id"], "UPDATE", "vehicle", vehicle_id, "profile")
+            elif action == "document":
+                path = save_upload(request.files.get("file"))
+                g.db.execute(
+                    "INSERT INTO documents (vehicle_id, kind, expiry_date, file_path) VALUES (?,?,?,?)",
+                    (vehicle_id, request.form["kind"], request.form.get("expiry_date") or None, path),
+                )
+                audit(g.db, g.user["id"], "CREATE", "document", vehicle_id, request.form["kind"])
+            elif action == "photo":
+                path = save_upload(request.files.get("file"))
+                if path:
+                    g.db.execute(
+                        "INSERT INTO vehicle_photos (vehicle_id, file_path) VALUES (?,?)",
+                        (vehicle_id, path),
+                    )
+            elif action == "mileage":
+                record_mileage(
+                    vehicle,
+                    request.form["log_date"],
+                    float(request.form["start_km"]),
+                    float(request.form["end_km"]),
+                    float(request.form["fuel_litres"]),
+                    request.form.get("note", ""),
+                    g.user["id"],
+                )
+                audit(g.db, g.user["id"], "CREATE", "mileage", vehicle_id, "")
+            elif action == "company":
+                start = request.form["start_date"]
+                g.db.execute(
+                    "UPDATE company_assignments SET end_date=? WHERE vehicle_id=? AND end_date IS NULL",
+                    (start, vehicle_id),
+                )
+                end = request.form.get("end_date") or None
+                g.db.execute(
+                    "INSERT INTO company_assignments (vehicle_id, company_id, start_date, end_date) VALUES (?,?,?,?)",
+                    (vehicle_id, int(request.form["company_id"]), start, end),
+                )
+                audit(g.db, g.user["id"], "ASSIGN", "vehicle", vehicle_id, request.form["company_id"])
+            elif action == "service":
+                g.db.execute(
+                    """INSERT INTO services (vehicle_id, service_type, cost, service_date, km_reading, notes)
+                       VALUES (?,?,?,?,?,?)""",
+                    (
+                        vehicle_id,
+                        request.form["service_type"].strip(),
+                        float(request.form.get("cost") or 0),
+                        request.form["service_date"],
+                        float(request.form["km_reading"]) if request.form.get("km_reading") else None,
+                        request.form.get("notes", ""),
+                    ),
+                )
+                audit(g.db, g.user["id"], "CREATE", "service", vehicle_id, request.form["service_type"])
+            elif action == "tyre":
+                if request.form.get("replace_id"):
+                    g.db.execute(
+                        "UPDATE tyres SET removed_on=? WHERE id=?",
+                        (request.form["installed_on"], int(request.form["replace_id"])),
+                    )
+                g.db.execute(
+                    """INSERT INTO tyres (vehicle_id, tyre_number, position, installed_on, notes)
+                       VALUES (?,?,?,?,?)""",
+                    (
+                        vehicle_id,
+                        request.form["tyre_number"].strip(),
+                        request.form["position"],
+                        request.form["installed_on"],
+                        request.form.get("notes", ""),
+                    ),
+                )
+            elif action == "accessories":
+                checked = set(request.form.getlist("present"))
+                for row in g.db.execute("SELECT * FROM accessories WHERE vehicle_id=?", (vehicle_id,)):
+                    g.db.execute(
+                        "UPDATE accessories SET present=?, checked_on=? WHERE id=?",
+                        (1 if str(row["id"]) in checked else 0, date.today().isoformat(), row["id"]),
+                    )
+            g.db.commit()
+            return redirect(url_for("vehicle_detail", vehicle_id=vehicle_id))
+        docs = g.db.execute("SELECT * FROM documents WHERE vehicle_id=? ORDER BY kind", (vehicle_id,)).fetchall()
+        photos = g.db.execute("SELECT * FROM vehicle_photos WHERE vehicle_id=?", (vehicle_id,)).fetchall()
+        logs = g.db.execute(
+            "SELECT * FROM mileage_logs WHERE vehicle_id=? ORDER BY log_date DESC", (vehicle_id,)
+        ).fetchall()
+        companies = g.db.execute("SELECT * FROM companies ORDER BY name").fetchall()
+        company_history = g.db.execute(
+            """SELECT ca.*, c.name FROM company_assignments ca JOIN companies c ON c.id=ca.company_id
+               WHERE ca.vehicle_id=? ORDER BY ca.start_date DESC""",
+            (vehicle_id,),
+        ).fetchall()
+        services = g.db.execute(
+            "SELECT * FROM services WHERE vehicle_id=? ORDER BY service_date DESC", (vehicle_id,)
+        ).fetchall()
+        tyres = g.db.execute(
+            "SELECT * FROM tyres WHERE vehicle_id=? ORDER BY installed_on DESC", (vehicle_id,)
+        ).fetchall()
+        accessories = g.db.execute(
+            "SELECT * FROM accessories WHERE vehicle_id=? ORDER BY name", (vehicle_id,)
+        ).fetchall()
+        fuels = g.db.execute(
+            "SELECT * FROM fuel_entries WHERE vehicle_id=? ORDER BY entry_date DESC", (vehicle_id,)
+        ).fetchall()
+        return render_template(
+            "vehicle.html",
+            vehicle=vehicle,
+            docs=docs,
+            photos=photos,
+            logs=logs,
+            companies=companies,
+            company_history=company_history,
+            services=services,
+            tyres=tyres,
+            accessories=accessories,
+            fuels=fuels,
+            kinds=DOC_KINDS,
+            positions=POSITIONS,
+            can_edit=g.user["role"] in {"ADMIN", "MANAGER"},
+            today=date.today().isoformat(),
+        )
+
+    @app.route("/companies", methods=["GET", "POST"])
+    @roles("ADMIN", "MANAGER")
+    def companies():
+        if request.method == "POST":
+            cur = g.db.execute(
+                "INSERT INTO companies (name, contact, address) VALUES (?,?,?)",
+                (request.form["name"].strip(), request.form.get("contact", "").strip(), request.form.get("address", "").strip()),
+            )
+            audit(g.db, g.user["id"], "CREATE", "company", cur.lastrowid, request.form["name"])
+            g.db.commit()
+            flash("Company saved.")
+            return redirect(url_for("companies"))
+        rows = g.db.execute(
+            """SELECT c.*,
+               (SELECT COUNT(*) FROM company_assignments ca WHERE ca.company_id=c.id AND ca.end_date IS NULL) AS active_vehicles
+               FROM companies c ORDER BY c.name"""
+        ).fetchall()
+        return render_template("companies.html", companies=rows)
+
+    @app.route("/fuel", methods=["GET", "POST"])
+    @login_required
+    def fuel():
+        if request.method == "POST":
+            vehicle = g.db.execute("SELECT * FROM vehicles WHERE id=?", (int(request.form["vehicle_id"]),)).fetchone()
+            if not vehicle:
+                abort(404)
+            if g.user["role"] == "DRIVER":
+                own = assigned_vehicle(g.user["driver_id"])
+                if not own or own["id"] != vehicle["id"]:
+                    abort(403)
+            litres = float(request.form["litres"])
+            cost = float(request.form["cost"])
+            km = float(request.form["km_reading"])
+            entry_date = request.form["entry_date"]
+            prev = g.db.execute(
+                "SELECT km_reading FROM fuel_entries WHERE vehicle_id=? AND km_reading<? ORDER BY km_reading DESC LIMIT 1",
+                (vehicle["id"], km),
+            ).fetchone()
+            g.db.execute(
+                "INSERT INTO fuel_entries (vehicle_id, entry_date, litres, cost, km_reading, created_by) VALUES (?,?,?,?,?,?)",
+                (vehicle["id"], entry_date, litres, cost, km, g.user["id"]),
+            )
+            if prev:
+                record_mileage(vehicle, entry_date, prev["km_reading"], km, litres, "From fuel entry", g.user["id"])
+            audit(g.db, g.user["id"], "CREATE", "fuel", vehicle["id"], str(litres))
+            g.db.commit()
+            flash("Fuel entry saved.")
+            return redirect(request.referrer or url_for("fuel"))
+        vehicle_id = request.args.get("vehicle_id", "")
+        start = request.args.get("start", "")
+        end = request.args.get("end", "")
+        sql = """SELECT f.*, v.number FROM fuel_entries f JOIN vehicles v ON v.id=f.vehicle_id WHERE 1=1"""
+        args = []
+        if g.user["role"] == "DRIVER":
+            own = assigned_vehicle(g.user["driver_id"])
+            sql += " AND f.vehicle_id=?"
+            args.append(own["id"] if own else -1)
+        elif vehicle_id:
+            sql += " AND f.vehicle_id=?"
+            args.append(vehicle_id)
+        if start:
+            sql += " AND f.entry_date>=?"
+            args.append(start)
+        if end:
+            sql += " AND f.entry_date<=?"
+            args.append(end)
+        sql += " ORDER BY f.entry_date DESC"
+        rows = g.db.execute(sql, args).fetchall()
+        vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
+        return render_template("fuel.html", rows=rows, vehicles=vehicles, vehicle_id=vehicle_id, start=start, end=end, today=date.today().isoformat())
+
+    @app.route("/maintenance")
+    @login_required
+    def maintenance():
+        if g.user["role"] == "DRIVER":
+            own = assigned_vehicle(g.user["driver_id"])
+            if not own:
+                return render_template("maintenance.html", cards=[])
+            return redirect(url_for("vehicle_detail", vehicle_id=own["id"]))
+        cards = []
+        for vehicle in g.db.execute("SELECT * FROM vehicles ORDER BY number"):
+            latest_km = g.db.execute(
+                "SELECT MAX(km_reading) km FROM fuel_entries WHERE vehicle_id=?", (vehicle["id"],)
+            ).fetchone()["km"] or 0
+            last = g.db.execute(
+                "SELECT * FROM services WHERE vehicle_id=? ORDER BY service_date DESC LIMIT 1",
+                (vehicle["id"],),
+            ).fetchone()
+            status = "ok"
+            detail = "No service yet"
+            if last:
+                km_since = latest_km - (last["km_reading"] or 0)
+                days_since = (date.today() - date.fromisoformat(last["service_date"])).days
+                detail = f"{last['service_type']} · {km_since:.0f} km · {days_since} days"
+                if km_since >= vehicle["service_interval_km"] or days_since >= vehicle["service_interval_days"]:
+                    status = "overdue"
+                elif km_since >= vehicle["service_interval_km"] - 500 or days_since >= vehicle["service_interval_days"] - 7:
+                    status = "soon"
+            cards.append({"vehicle": vehicle, "status": status, "detail": detail, "latest_km": latest_km})
+        return render_template("maintenance.html", cards=cards)
+
+    @app.route("/reports", methods=["GET", "POST"])
+    @roles("ADMIN", "MANAGER")
+    def reports():
+        if request.method == "POST":
+            vehicle = g.db.execute("SELECT * FROM vehicles WHERE id=?", (int(request.form["vehicle_id"]),)).fetchone()
+            start = request.form["period_start"]
+            end = request.form["period_end"]
+            basis = request.form["basis"]
+            rate = float(request.form["rate"])
+            km = g.db.execute(
+                """SELECT COALESCE(SUM(end_km-start_km),0) s FROM mileage_logs
+                   WHERE vehicle_id=? AND log_date>=? AND log_date<=?""",
+                (vehicle["id"], start, end),
+            ).fetchone()["s"]
+            days = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
+            amount = rate * (km if basis == "KM" else days)
+            g.db.execute(
+                """INSERT INTO invoices
+                (company_id, vehicle_id, period_start, period_end, basis, rate, km_driven, days, amount, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    int(request.form["company_id"]),
+                    vehicle["id"],
+                    start,
+                    end,
+                    basis,
+                    rate,
+                    km,
+                    days,
+                    round(amount, 2),
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            audit(g.db, g.user["id"], "CREATE", "invoice", vehicle["id"], f"{amount:.2f}")
+            g.db.commit()
+            flash("Invoice created.")
+            return redirect(url_for("reports"))
+        start = request.args.get("start", month_start())
+        end = request.args.get("end", date.today().isoformat())
+        vehicle_expenses = g.db.execute(
+            """SELECT v.number, v.model,
+               COALESCE((SELECT SUM(cost) FROM fuel_entries f WHERE f.vehicle_id=v.id AND f.entry_date BETWEEN ? AND ?),0) fuel,
+               COALESCE((SELECT SUM(cost) FROM services s WHERE s.vehicle_id=v.id AND s.service_date BETWEEN ? AND ?),0) maintenance
+               FROM vehicles v ORDER BY v.number""",
+            (start, end, start, end),
+        ).fetchall()
+        company_km = g.db.execute(
+            """SELECT c.name,
+               COALESCE(SUM(m.end_km-m.start_km),0) km
+               FROM companies c
+               LEFT JOIN company_assignments ca ON ca.company_id=c.id
+               LEFT JOIN mileage_logs m ON m.vehicle_id=ca.vehicle_id
+                 AND m.log_date BETWEEN ? AND ?
+                 AND m.log_date>=ca.start_date
+                 AND (ca.end_date IS NULL OR m.log_date<=ca.end_date)
+               GROUP BY c.id ORDER BY c.name""",
+            (start, end),
+        ).fetchall()
+        salaries = []
+        for driver in g.db.execute("SELECT * FROM drivers ORDER BY name"):
+            adv = g.db.execute(
+                "SELECT COALESCE(SUM(amount),0) s FROM advances WHERE driver_id=? AND paid_on BETWEEN ? AND ?",
+                (driver["id"], start, end),
+            ).fetchone()["s"]
+            salaries.append({"name": driver["name"], "salary": driver["monthly_salary"], "advance": adv, "remaining": driver["monthly_salary"] - adv})
+        fuel_cost = g.db.execute(
+            "SELECT COALESCE(SUM(cost),0) s FROM fuel_entries WHERE entry_date BETWEEN ? AND ?", (start, end)
+        ).fetchone()["s"]
+        maint_cost = g.db.execute(
+            "SELECT COALESCE(SUM(cost),0) s FROM services WHERE service_date BETWEEN ? AND ?", (start, end)
+        ).fetchone()["s"]
+        salary_cost = sum(row["salary"] for row in salaries)
+        revenue = g.db.execute(
+            "SELECT COALESCE(SUM(amount),0) s FROM invoices WHERE period_start>=? AND period_end<=?",
+            (start, end),
+        ).fetchone()["s"]
+        pnl = {
+            "revenue": revenue,
+            "fuel": fuel_cost,
+            "maintenance": maint_cost,
+            "salary": salary_cost,
+            "profit": revenue - fuel_cost - maint_cost - salary_cost,
+        }
+        invoices = g.db.execute(
+            """SELECT i.*, c.name AS company, v.number FROM invoices i
+               JOIN companies c ON c.id=i.company_id JOIN vehicles v ON v.id=i.vehicle_id
+               ORDER BY i.id DESC"""
+        ).fetchall()
+        companies = g.db.execute("SELECT * FROM companies ORDER BY name").fetchall()
+        vehicles = g.db.execute("SELECT * FROM vehicles ORDER BY number").fetchall()
+        rates = {r["vtype"]: r for r in g.db.execute("SELECT * FROM billing_rates")}
+        return render_template(
+            "reports.html",
+            start=start,
+            end=end,
+            vehicle_expenses=vehicle_expenses,
+            company_km=company_km,
+            salaries=salaries,
+            pnl=pnl,
+            invoices=invoices,
+            companies=companies,
+            vehicles=vehicles,
+            rates=rates,
+        )
+
+    @app.route("/invoices/<int:invoice_id>.csv")
+    @roles("ADMIN", "MANAGER")
+    def invoice_csv(invoice_id):
+        inv = _invoice(invoice_id)
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["Invoice", inv["id"], "Company", inv["company"], "Vehicle", inv["number"]])
+        writer.writerow(["Period", inv["period_start"], inv["period_end"], "Basis", inv["basis"]])
+        writer.writerow(["Rate", inv["rate"], "KM", inv["km_driven"], "Days", inv["days"], "Amount", inv["amount"]])
+        data = io.BytesIO(buf.getvalue().encode())
+        return send_file(data, as_attachment=True, download_name=f"invoice-{inv['id']}.csv", mimetype="text/csv")
+
+    @app.route("/invoices/<int:invoice_id>.xlsx")
+    @roles("ADMIN", "MANAGER")
+    def invoice_xlsx(invoice_id):
+        inv = _invoice(invoice_id)
+        rows = [
+            ["Field", "Value"],
+            ["Invoice", inv["id"]],
+            ["Company", inv["company"]],
+            ["Vehicle", inv["number"]],
+            ["Period start", inv["period_start"]],
+            ["Period end", inv["period_end"]],
+            ["Basis", inv["basis"]],
+            ["Rate", inv["rate"]],
+            ["KM driven", inv["km_driven"]],
+            ["Days", inv["days"]],
+            ["Amount", inv["amount"]],
+        ]
+        data = io.BytesIO()
+        _xlsx(data, rows)
+        data.seek(0)
+        return send_file(
+            data,
+            as_attachment=True,
+            download_name=f"invoice-{inv['id']}.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    @app.route("/invoices/<int:invoice_id>.pdf")
+    @roles("ADMIN", "MANAGER")
+    def invoice_pdf(invoice_id):
+        inv = _invoice(invoice_id)
+        lines = [
+            "Janani Travels",
+            f"Invoice #{inv['id']}",
+            f"Company: {inv['company']}",
+            f"Vehicle: {inv['number']} ({inv['model']})",
+            f"Period: {inv['period_start']} to {inv['period_end']}",
+            f"Basis: {inv['basis']} at {inv['rate']}",
+            f"KM driven: {inv['km_driven']}",
+            f"Days: {inv['days']}",
+            f"Amount: INR {inv['amount']}",
+        ]
+        data = io.BytesIO(_simple_pdf(lines))
+        return send_file(data, as_attachment=True, download_name=f"invoice-{inv['id']}.pdf", mimetype="application/pdf")
+
+    def _invoice(invoice_id):
+        inv = g.db.execute(
+            """SELECT i.*, c.name AS company, v.number, v.model FROM invoices i
+               JOIN companies c ON c.id=i.company_id JOIN vehicles v ON v.id=i.vehicle_id
+               WHERE i.id=?""",
+            (invoice_id,),
+        ).fetchone()
+        if not inv:
+            abort(404)
+        return inv
+
+    @app.route("/notifications")
+    @login_required
+    def notifications():
+        rows = g.db.execute(
+            "SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC",
+            (g.user["id"],),
+        ).fetchall()
+        g.db.execute("UPDATE notifications SET is_read=1 WHERE user_id=?", (g.user["id"],))
+        g.db.commit()
+        return render_template("notifications.html", rows=rows)
+
+    @app.route("/audit")
+    @roles("ADMIN")
+    def audit_page():
+        rows = g.db.execute(
+            """SELECT a.*, u.name AS user_name FROM audit_logs a
+               LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 200"""
+        ).fetchall()
+        return render_template("audit.html", rows=rows)
+
+    @app.route("/search")
+    @login_required
+    def search():
+        q = request.args.get("q", "").strip()
+        drivers = []
+        vehicles = []
+        if q:
+            if g.user["role"] == "DRIVER":
+                drivers = g.db.execute(
+                    "SELECT * FROM drivers WHERE id=? AND (name LIKE ? OR phone LIKE ?)",
+                    (g.user["driver_id"], f"%{q}%", f"%{q}%"),
+                ).fetchall()
+                own = assigned_vehicle(g.user["driver_id"])
+                if own and (q.lower() in own["number"].lower() or q.lower() in own["model"].lower()):
+                    vehicles = [own]
+            else:
+                drivers = g.db.execute(
+                    "SELECT * FROM drivers WHERE name LIKE ? OR phone LIKE ? OR dl_number LIKE ?",
+                    (f"%{q}%", f"%{q}%", f"%{q}%"),
+                ).fetchall()
+                vehicles = g.db.execute(
+                    "SELECT * FROM vehicles WHERE number LIKE ? OR model LIKE ?",
+                    (f"%{q}%", f"%{q}%"),
+                ).fetchall()
+        return render_template("search.html", q=q, drivers=drivers, vehicles=vehicles)
+
+    @app.route("/m", methods=["GET"])
+    @roles("DRIVER")
+    def driver_home():
+        driver = g.db.execute("SELECT * FROM drivers WHERE id=?", (g.user["driver_id"],)).fetchone()
+        vehicle = assigned_vehicle(g.user["driver_id"])
+        notes = g.db.execute(
+            "SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 8",
+            (g.user["id"],),
+        ).fetchall()
+        fuels = []
+        services = []
+        if vehicle:
+            fuels = g.db.execute(
+                "SELECT * FROM fuel_entries WHERE vehicle_id=? ORDER BY entry_date DESC LIMIT 5",
+                (vehicle["id"],),
+            ).fetchall()
+            services = g.db.execute(
+                "SELECT * FROM services WHERE vehicle_id=? ORDER BY service_date DESC LIMIT 5",
+                (vehicle["id"],),
+            ).fetchall()
+        return render_template(
+            "driver_home.html",
+            driver=driver,
+            vehicle=vehicle,
+            notes=notes,
+            fuels=fuels,
+            services=services,
+            summary=salary_summary(driver),
+            today=date.today().isoformat(),
+        )
+
+    @app.route("/files/<path:name>")
+    @login_required
+    def files(name):
+        path = (UPLOAD_DIR / name).resolve()
+        if UPLOAD_DIR.resolve() not in path.parents and path != UPLOAD_DIR.resolve():
+            abort(404)
+        if not path.exists():
+            abort(404)
+        return send_file(path)
+
+    @app.route("/api/auth/otp", methods=["POST"])
+    def api_otp():
+        phone = (request.json or {}).get("phone", "").strip()
+        user = g.db.execute("SELECT * FROM users WHERE phone=?", (phone,)).fetchone()
+        if not user:
+            return jsonify({"error": "Unknown phone"}), 404
+        code = f"{random.randint(0, 999999):06d}"
+        expires = (datetime.now() + timedelta(minutes=5)).isoformat(timespec="seconds")
+        g.db.execute("INSERT INTO otp_codes (phone, code, expires_at) VALUES (?,?,?)", (phone, code, expires))
+        g.db.commit()
+        return jsonify({"ok": True, "dev_otp": code, "expires_at": expires})
+
+    @app.route("/api/auth/verify", methods=["POST"])
+    def api_verify():
+        body = request.json or {}
+        phone = body.get("phone", "").strip()
+        code = body.get("code", "").strip()
+        user = g.db.execute("SELECT * FROM users WHERE phone=?", (phone,)).fetchone()
+        row = g.db.execute(
+            "SELECT * FROM otp_codes WHERE phone=? AND code=? AND used=0 ORDER BY id DESC LIMIT 1",
+            (phone, code),
+        ).fetchone()
+        if not user or not row or row["expires_at"] < datetime.now().isoformat(timespec="seconds"):
+            return jsonify({"error": "Invalid OTP"}), 401
+        g.db.execute("UPDATE otp_codes SET used=1 WHERE id=?", (row["id"],))
+        g.db.commit()
+        session["uid"] = user["id"]
+        return jsonify({"ok": True, "role": user["role"], "name": user["name"]})
+
+    @app.route("/api/me")
+    @login_required
+    def api_me():
+        payload = {"id": g.user["id"], "name": g.user["name"], "phone": g.user["phone"], "role": g.user["role"]}
+        if g.user["role"] == "DRIVER":
+            vehicle = assigned_vehicle(g.user["driver_id"])
+            payload["vehicle"] = dict(vehicle) if vehicle else None
+        return jsonify(payload)
+
+    @app.route("/api/fuel", methods=["POST"])
+    @roles("DRIVER", "ADMIN", "MANAGER")
+    def api_fuel():
+        body = request.json or {}
+        vehicle_id = int(body["vehicle_id"])
+        if g.user["role"] == "DRIVER":
+            own = assigned_vehicle(g.user["driver_id"])
+            if not own or own["id"] != vehicle_id:
+                abort(403)
+        vehicle = g.db.execute("SELECT * FROM vehicles WHERE id=?", (vehicle_id,)).fetchone()
+        litres = float(body["litres"])
+        km = float(body["km_reading"])
+        prev = g.db.execute(
+            "SELECT km_reading FROM fuel_entries WHERE vehicle_id=? AND km_reading<? ORDER BY km_reading DESC LIMIT 1",
+            (vehicle_id, km),
+        ).fetchone()
+        g.db.execute(
+            "INSERT INTO fuel_entries (vehicle_id, entry_date, litres, cost, km_reading, created_by) VALUES (?,?,?,?,?,?)",
+            (vehicle_id, body.get("entry_date") or date.today().isoformat(), litres, float(body.get("cost") or 0), km, g.user["id"]),
+        )
+        if prev:
+            record_mileage(vehicle, body.get("entry_date") or date.today().isoformat(), prev["km_reading"], km, litres, "API", g.user["id"])
+        g.db.commit()
+        return jsonify({"ok": True})
+
+    @app.errorhandler(403)
+    def forbidden(_e):
+        return render_template("error.html", message="You do not have access to that page."), 403
+
+    return app
+
+
+def _xlsx(buf, rows):
+    sheet = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>']
+    sheet.append('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>')
+    for r_idx, row in enumerate(rows, start=1):
+        sheet.append(f'<row r="{r_idx}">')
+        for c_idx, value in enumerate(row, start=1):
+            col = chr(64 + c_idx)
+            text = str(value).replace("&", "&amp;").replace("<", "&lt;")
+            sheet.append(f'<c r="{col}{r_idx}" t="inlineStr"><is><t>{text}</t></is></c>')
+        sheet.append("</row>")
+    sheet.append("</sheetData></worksheet>")
+    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"""
+    rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"""
+    workbook = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="Invoice" sheetId="1" r:id="rId1"/></sheets></workbook>"""
+    wb_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"""
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("xl/workbook.xml", workbook)
+        zf.writestr("xl/_rels/workbook.xml.rels", wb_rels)
+        zf.writestr("xl/worksheets/sheet1.xml", "".join(sheet))
+
+
+def _simple_pdf(lines):
+    text = ["BT /F1 12 Tf 50 800 Td 16 TL"]
+    for line in lines:
+        safe = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        text.append(f"({safe}) Tj T*")
+    text.append("ET")
+    stream = "\n".join(text).encode()
+    objects = []
+    objects.append(b"1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n")
+    objects.append(b"2 0 obj<< /Type /Pages /Count 1 /Kids [3 0 R] >>endobj\n")
+    objects.append(b"3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources<< /Font<< /F1 5 0 R >> >> >>endobj\n")
+    objects.append(f"4 0 obj<< /Length {len(stream)} >>stream\n".encode() + stream + b"\nendstream endobj\n")
+    objects.append(b"5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n")
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for obj in objects:
+        offsets.append(len(out))
+        out.extend(obj)
+    xref = len(out)
+    out.extend(f"xref\n0 {len(offsets)}\n".encode())
+    out.extend(b"0000000000 65535 f \n")
+    for off in offsets[1:]:
+        out.extend(f"{off:010d} 00000 n \n".encode())
+    out.extend(f"trailer<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode())
+    return bytes(out)
+
+
+app = create_app()
+
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=5050, debug=True)
