@@ -21,6 +21,7 @@ aside { background: #3f3478; color: #f7f4ff; padding: 22px 16px; display: flex; 
 .login-logo { width: 72px; height: 72px; border-radius: 18px; margin-bottom: 8px; }
 .brand small, .who span { display: block; font-weight: 500; opacity: 0.75; font-size: 0.82rem; }
 nav { display: flex; flex-direction: column; gap: 4px; }
+nav .top-link { font-weight: 650; }
 nav details summary { cursor: pointer; list-style: none; padding: 10px; border-radius: 8px; font-weight: 650; }
 nav details summary::-webkit-details-marker { display: none; }
 nav details[open] > summary { background: rgba(255,255,255,0.1); }
@@ -30,7 +31,8 @@ nav a:hover { background: rgba(255,255,255,0.08); }
 .badge { background: #ddd6fe; color: #3f3478; border-radius: 99px; padding: 0 6px; font-size: 0.75rem; }
 .who { margin-top: auto; font-size: 0.92rem; }
 main { padding: 22px 28px 48px; }
-.search { display: flex; gap: 8px; margin-bottom: 16px; }
+.search { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
+.clear-search { color: var(--pine); font-weight: 650; }
 input, select, button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: white; }
 button { background: var(--pine); color: white; border: 0; cursor: pointer; }
 button.secondary { background: transparent; color: var(--pine); border: 1px solid var(--pine); }

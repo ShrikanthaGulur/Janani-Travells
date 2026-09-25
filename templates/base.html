@@ -19,6 +19,7 @@
     <nav>
       {% set page = request.endpoint %}
       {% if me.role != 'DRIVER' %}
+      <a class="top-link" href="{{ url_for('dashboard') }}">Dashboard</a>
       <details {% if page in ['drivers','driver_detail','attendance','advances'] %}open{% endif %}>
         <summary>Drivers</summary>
         <a href="{{ url_for('drivers') }}">Driver details</a>
@@ -75,6 +76,7 @@
     <form class="search" action="{{ url_for('search') }}" method="get">
       <input name="q" placeholder="Search driver or vehicle number" value="{{ request.args.get('q','') }}">
       <button>Search</button>
+      {% if request.args.get('q') %}<a class="clear-search" href="{{ url_for('driver_home' if me.role == 'DRIVER' else 'dashboard') }}">Clear</a>{% endif %}
     </form>
     {% with messages = get_flashed_messages() %}
       {% for message in messages %}<div class="flash">{{ message }}</div>{% endfor %}

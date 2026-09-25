@@ -1246,6 +1246,8 @@ def create_app():
     @login_required
     def search():
         q = request.args.get("q", "").strip()
+        if not q:
+            return redirect(url_for("driver_home" if g.user["role"] == "DRIVER" else "dashboard"))
         drivers = []
         vehicles = []
         if q:
