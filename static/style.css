@@ -19,8 +19,8 @@ aside { background: #3f3478; color: #f7f4ff; padding: 22px 16px; display: flex; 
 .brand { font-size: 1.35rem; font-weight: 700; display: flex; align-items: center; gap: 10px; color: #f7f4ff; text-decoration: none; }
 .menu-btn { display: none; }
 .wordmark { font-family: Outfit, "Avenir Next", sans-serif; font-weight: 700; letter-spacing: 0.06em; }
-.logo { width: 42px; height: 42px; border-radius: 12px; }
-.login-logo { width: 72px; height: 72px; border-radius: 18px; margin-bottom: 8px; }
+.logo { width: 42px; height: 42px; object-fit: contain; border-radius: 10px; background: #fff; }
+.login-logo { width: 72px; height: 72px; border-radius: 16px; margin-bottom: 8px; }
 .brand small, .who span { display: block; font-weight: 500; opacity: 0.75; font-size: 0.82rem; }
 nav { display: flex; flex-direction: column; gap: 4px; }
 nav .top-link { font-weight: 650; }
@@ -33,6 +33,10 @@ nav a:hover { background: rgba(255,255,255,0.08); }
 .badge { background: #ddd6fe; color: #3f3478; border-radius: 99px; padding: 0 6px; font-size: 0.75rem; }
 .who { margin-top: auto; font-size: 0.92rem; }
 main { padding: 22px 28px 48px; }
+.page-back { margin: 0 0 12px; }
+button.back-arrow { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--ink); font-size: 1.3rem; }
+a.back-label { display: inline-flex; align-items: center; margin-right: 10px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--pine); background: transparent; color: var(--pine); text-decoration: none; font-size: 0.95rem; vertical-align: middle; }
+input[readonly] { background: #f4f0fa; }
 .search { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
 .clear-search { color: var(--pine); font-weight: 650; }
 input, select, button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: white; }
@@ -48,8 +52,16 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--lin
 .status-soon { border-color: var(--amber); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
 .form-grid, .filters, .inline { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin: 12px 0; }
-.form-grid label, .login label { display: flex; flex-direction: column; gap: 4px; font-size: 0.88rem; }
+.form-grid label, .login label { display: flex; flex-direction: column; gap: 4px; font-size: 0.88rem; flex: 0 1 16rem; max-width: 100%; }
+.phone-label { flex-basis: 22rem; }
+.phone-row { display: flex; align-items: stretch; gap: 6px; }
+.dial { display: inline-flex; align-items: center; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: #f4f0fa; font-weight: 600; }
+.phone-row input { flex: 1; min-width: 0; width: auto; }
+input[type="date"], input[type="month"], input[type="time"] { width: 11.5rem; max-width: 100%; }
 .flash { background: #efe9ff; border: 1px solid #cfc3f0; padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; }
+.toast-backdrop { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 18px; background: rgba(42, 36, 64, 0.45); }
+.toast { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; width: min(420px, 100%); background: var(--clay); color: #fff; padding: 18px 18px 16px; border-radius: 14px; box-shadow: 0 16px 36px rgba(42, 36, 64, 0.32); font-size: 1.05rem; }
+.toast-close { background: #fff; color: var(--clay); border: 0; }
 .flash.solo { margin: 12px; }
 .login { max-width: 460px; margin: 8vh auto; background: var(--panel); padding: 28px; border-radius: 18px; }
 .eyebrow { letter-spacing: 0.14em; text-transform: uppercase; font-size: 0.75rem; color: #6a6152; }
@@ -71,10 +83,12 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--lin
 .mark-L { color: #9a6b12; font-weight: 700; }
 .mark-H { color: #1d4e89; font-weight: 700; }
 @media (max-width: 800px) {
-  .shell { grid-template-columns: 1fr; }
-  aside { position: sticky; top: 0; z-index: 5; padding: 12px 14px; gap: 10px; }
+  .shell { grid-template-columns: 1fr; align-content: start; }
+  aside { position: sticky; top: 0; z-index: 5; padding: 12px 14px; gap: 10px; align-self: start; width: 100%; }
   .menu-btn { display: inline-flex; align-items: center; background: rgba(255,255,255,0.16); color: #f7f4ff; min-height: 40px; }
   aside:not(.open) nav, aside:not(.open) .who { display: none; }
+  aside.open { min-height: 100vh; }
+  aside.open ~ main { display: none; }
   nav { flex-direction: column; }
   nav details { width: 100%; }
   .who { margin-top: 0; }
@@ -86,4 +100,13 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--lin
   input, select, button { font-size: 16px; min-height: 44px; }
   .form-grid, .inline, .filters, .stack, .search { flex-direction: column; align-items: stretch; }
   .check { display: flex; margin: 10px 0; font-size: 1rem; }
+  .date-panel button { min-height: 28px; font-size: 0.82rem; }
 }
+.date-field { position: relative; display: inline-block; }
+.date-panel { position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; width: 248px; background: white; border: 1px solid var(--line); border-radius: 12px; padding: 8px; box-shadow: 0 10px 28px rgba(42,36,64,0.18); }
+.date-panel.above { top: auto; bottom: calc(100% + 6px); }
+.date-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.date-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
+.date-grid button, .date-nav button { background: transparent; color: var(--ink); min-height: 28px; padding: 2px; }
+.date-grid button.on { background: var(--pine); color: white; }
+.date-dow { font-size: 0.72rem; color: #6b6280; padding-top: 4px; }

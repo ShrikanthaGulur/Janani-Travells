@@ -38,6 +38,22 @@ HANDOVER_ITEMS = [
 POSITIONS = ["Front Left", "Front Right", "Rear Left", "Rear Right", "Stepney"]
 
 
+def clean_aadhaar(raw):
+    text = (raw or "").strip().replace(" ", "")
+    if not text:
+        return ""
+    if len(text) == 12 and text.isdigit():
+        return text
+    return None
+
+
+def clean_phone(raw):
+    text = (raw or "").strip().replace(" ", "")
+    if len(text) == 10 and text.isdigit():
+        return text
+    return None
+
+
 def create_app():
     app = Flask(__name__)
     app.secret_key = os.environ.get("TMS_SECRET", "tms-dev-secret-change-me")
@@ -114,6 +130,28 @@ def create_app():
     def month_start():
         return date.today().replace(day=1).isoformat()
 
+    def month_advance_sum(driver_id, month, exclude_id=None):
+        if exclude_id is None:
+            row = g.db.execute(
+                "SELECT COALESCE(SUM(amount),0) s FROM advances WHERE driver_id=? AND paid_on LIKE ?",
+                (driver_id, month + "%"),
+            ).fetchone()
+        else:
+            row = g.db.execute(
+                "SELECT COALESCE(SUM(amount),0) s FROM advances WHERE driver_id=? AND paid_on LIKE ? AND id!=?",
+                (driver_id, month + "%", exclude_id),
+            ).fetchone()
+        return row["s"]
+
+    def blocks_over_salary(amount, salary, month_total, note):
+        if amount <= salary and month_total <= salary:
+            return False
+        flash(
+            "This advance is more than the salary. For an emergency, write it in the note, then save the advance.",
+            "toast",
+        )
+        return not (note or "").strip()
+
     def month_salary(driver, month):
         row = g.db.execute(
             "SELECT amount FROM monthly_salaries WHERE driver_id=? AND year_month=?",
@@ -149,6 +187,7 @@ def create_app():
         for row in rows:
             balance -= row["amount"]
             lines.append({
+                "id": row["id"],
                 "paid_on": row["paid_on"],
                 "amount": row["amount"],
                 "note": row["note"],
@@ -450,6 +489,32 @@ def create_app():
                 g.db.commit()
                 flash(f"{driver['name']}'s salary for {pay_month} is ₹{salary:,.0f}. Other months are unchanged.")
                 return redirect(url_for("advances", driver=driver_id, month=pay_month))
+            if request.form.get("action") == "edit_advance":
+                if g.user["role"] != "ADMIN":
+                    abort(403)
+                advance_id = int(request.form["advance_id"])
+                row = g.db.execute(
+                    "SELECT * FROM advances WHERE id=? AND driver_id=?",
+                    (advance_id, driver_id),
+                ).fetchone()
+                if not row:
+                    abort(404)
+                amount = float(request.form["amount"])
+                note = request.form.get("note", "").strip()
+                view_month = request.form.get("month") or row["paid_on"][:7]
+                pay_month = row["paid_on"][:7]
+                salary = month_salary(driver, pay_month)
+                month_total = month_advance_sum(driver_id, pay_month, advance_id) + amount
+                if blocks_over_salary(amount, salary, month_total, note):
+                    return redirect(url_for("advances", driver=driver_id, month=view_month))
+                g.db.execute(
+                    "UPDATE advances SET amount=?, note=? WHERE id=? AND driver_id=?",
+                    (amount, note, advance_id, driver_id),
+                )
+                audit(g.db, g.user["id"], "UPDATE", "advance", advance_id, str(amount))
+                g.db.commit()
+                flash("Advance updated.")
+                return redirect(url_for("advances", driver=driver_id, month=view_month))
             amount = float(request.form["amount"])
             paid_on = request.form["paid_on"]
             view_month = request.form.get("month") or paid_on[:7]
@@ -460,15 +525,19 @@ def create_app():
             if mode not in {"Cash", "UPI", "Bank transfer"}:
                 mode = "Cash"
             txn = request.form.get("transaction_id", "").strip()
+            note = request.form.get("note", "").strip()
+            salary = month_salary(driver, paid_on[:7])
+            month_total = month_advance_sum(driver_id, paid_on[:7]) + amount
+            if blocks_over_salary(amount, salary, month_total, note):
+                return redirect(url_for("advances", driver=driver_id, month=view_month))
             g.db.execute(
                 "INSERT INTO advances (driver_id, amount, paid_on, note, payment_mode, transaction_id) VALUES (?,?,?,?,?,?)",
-                (driver_id, amount, paid_on, request.form.get("note", ""), mode, txn),
+                (driver_id, amount, paid_on, note, mode, txn),
             )
             deducted = g.db.execute(
                 "SELECT COALESCE(SUM(amount),0) s FROM advances WHERE driver_id=? AND paid_on LIKE ?",
                 (driver_id, paid_on[:7] + "%"),
             ).fetchone()["s"]
-            salary = month_salary(driver, paid_on[:7])
             balance = salary - deducted
             audit(g.db, g.user["id"], "CREATE", "advance", driver_id, str(amount))
             g.db.commit()
@@ -494,6 +563,7 @@ def create_app():
             ledgers.append(item)
         year, mon = [int(part) for part in month.split("-")]
         last_day = calendar.monthrange(year, mon)[1]
+        days = [f"{month}-{day:02d}" for day in range(1, last_day + 1)]
         paid_default = date.today().isoformat() if date.today().strftime("%Y-%m") == month else f"{month}-01"
         return render_template(
             "advances.html",
@@ -501,9 +571,11 @@ def create_app():
             selected=selected,
             month=month,
             can_edit=can_edit,
+            is_admin=g.user["role"] == "ADMIN",
             today=paid_default,
             month_start=f"{month}-01",
             month_end=f"{month}-{last_day:02d}",
+            days=days,
         )
 
     @app.route("/dashboard")
@@ -535,17 +607,24 @@ def create_app():
     @roles("ADMIN", "MANAGER")
     def drivers():
         if request.method == "POST":
-            phone = request.form["phone"].strip()
-            if g.db.execute("SELECT id FROM drivers WHERE phone=?", (phone,)).fetchone():
+            phone = clean_phone(request.form["phone"])
+            aadhaar = clean_aadhaar(request.form.get("aadhaar"))
+            if phone is None:
+                flash("Phone number must be 10 digits.")
+            elif g.db.execute("SELECT id FROM drivers WHERE phone=?", (phone,)).fetchone():
                 flash("A driver with that phone already exists.")
+            elif aadhaar is None:
+                flash("Aadhaar number must be 12 digits.")
             else:
                 cur = g.db.execute(
-                    """INSERT INTO drivers (name, phone, address, dl_number, dl_expiry, monthly_salary)
-                       VALUES (?,?,?,?,?,?)""",
+                    """INSERT INTO drivers (name, phone, country_code, address, aadhaar, dl_number, dl_expiry, monthly_salary)
+                       VALUES (?,?,?,?,?,?,?,?)""",
                     (
                         request.form["name"].strip(),
                         phone,
+                        "+91",
                         request.form.get("address", "").strip(),
+                        aadhaar,
                         request.form.get("dl_number", "").strip(),
                         request.form.get("dl_expiry") or None,
                         float(request.form.get("monthly_salary") or 0),
@@ -557,19 +636,26 @@ def create_app():
                     (phone, request.form["name"].strip(), driver_id),
                 )
                 copy = save_upload(request.files.get("dl_copy"))
+                aadhaar_copy = save_upload(request.files.get("aadhaar_copy"))
                 if copy:
                     g.db.execute("UPDATE drivers SET dl_copy=? WHERE id=?", (copy, driver_id))
+                if aadhaar_copy:
+                    g.db.execute("UPDATE drivers SET aadhaar_copy=? WHERE id=?", (aadhaar_copy, driver_id))
                 audit(g.db, g.user["id"], "CREATE", "driver", driver_id, request.form["name"])
                 g.db.commit()
                 flash("Driver added. They can sign in with this phone number.")
             return redirect(url_for("drivers"))
         q = request.args.get("q", "").strip()
-        sql = "SELECT * FROM drivers"
-        args = []
+        month = date.today().strftime("%Y-%m")
+        sql = """SELECT d.*, COALESCE(
+                   (SELECT amount FROM monthly_salaries m WHERE m.driver_id=d.id AND m.year_month=?),
+                   d.monthly_salary) AS display_salary
+                 FROM drivers d"""
+        args = [month]
         if q:
-            sql += " WHERE name LIKE ? OR phone LIKE ? OR dl_number LIKE ?"
-            args = [f"%{q}%", f"%{q}%", f"%{q}%"]
-        sql += " ORDER BY name"
+            sql += " WHERE d.name LIKE ? OR d.phone LIKE ? OR d.dl_number LIKE ? OR d.aadhaar LIKE ?"
+            args += [f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"]
+        sql += " ORDER BY d.name"
         rows = g.db.execute(sql, args).fetchall()
         return render_template("drivers.html", drivers=rows, q=q)
 
@@ -584,35 +670,85 @@ def create_app():
         if request.method == "POST" and g.user["role"] in {"ADMIN", "MANAGER"}:
             action = request.form.get("action")
             if action == "profile":
+                aadhaar = clean_aadhaar(request.form.get("aadhaar"))
+                phone = clean_phone(request.form.get("phone"))
+                if phone is None:
+                    flash("Phone number must be 10 digits.")
+                    return redirect(url_for("driver_detail", driver_id=driver_id))
+                if aadhaar is None:
+                    flash("Aadhaar number must be 12 digits.")
+                    return redirect(url_for("driver_detail", driver_id=driver_id))
                 copy = save_upload(request.files.get("dl_copy"))
+                aadhaar_copy = save_upload(request.files.get("aadhaar_copy"))
+                salary = float(request.form.get("monthly_salary") or 0)
                 g.db.execute(
-                    """UPDATE drivers SET name=?, phone=?, address=?, dl_number=?, dl_expiry=?, monthly_salary=?
+                    """UPDATE drivers SET name=?, phone=?, country_code=?, address=?, aadhaar=?, dl_number=?, dl_expiry=?, monthly_salary=?
                        WHERE id=?""",
                     (
                         request.form["name"].strip(),
-                        request.form["phone"].strip(),
+                        phone,
+                        "+91",
                         request.form.get("address", "").strip(),
+                        aadhaar,
                         request.form.get("dl_number", "").strip(),
                         request.form.get("dl_expiry") or None,
-                        float(request.form.get("monthly_salary") or 0),
+                        salary,
                         driver_id,
                     ),
                 )
+                pay_month = date.today().strftime("%Y-%m")
+                g.db.execute(
+                    """INSERT INTO monthly_salaries (driver_id, year_month, amount) VALUES (?,?,?)
+                       ON CONFLICT(driver_id, year_month) DO UPDATE SET amount=excluded.amount""",
+                    (driver_id, pay_month, salary),
+                )
                 if copy:
                     g.db.execute("UPDATE drivers SET dl_copy=? WHERE id=?", (copy, driver_id))
+                if aadhaar_copy:
+                    g.db.execute("UPDATE drivers SET aadhaar_copy=? WHERE id=?", (aadhaar_copy, driver_id))
                 g.db.execute(
                     "UPDATE users SET name=?, phone=? WHERE driver_id=?",
-                    (request.form["name"].strip(), request.form["phone"].strip(), driver_id),
+                    (request.form["name"].strip(), phone, driver_id),
                 )
                 audit(g.db, g.user["id"], "UPDATE", "driver", driver_id, "profile")
                 flash("Driver profile updated.")
             elif action == "advance":
+                amount = float(request.form["amount"])
+                paid_on = request.form["paid_on"]
+                note = request.form.get("note", "").strip()
+                salary = month_salary(driver, paid_on[:7])
+                month_total = month_advance_sum(driver_id, paid_on[:7]) + amount
+                if blocks_over_salary(amount, salary, month_total, note):
+                    return redirect(url_for("driver_detail", driver_id=driver_id))
                 g.db.execute(
                     "INSERT INTO advances (driver_id, amount, paid_on, note) VALUES (?,?,?,?)",
-                    (driver_id, float(request.form["amount"]), request.form["paid_on"], request.form.get("note", "")),
+                    (driver_id, amount, paid_on, note),
                 )
                 audit(g.db, g.user["id"], "CREATE", "advance", driver_id, request.form["amount"])
                 flash("Advance recorded.")
+            elif action == "edit_advance":
+                if g.user["role"] != "ADMIN":
+                    abort(403)
+                advance_id = int(request.form["advance_id"])
+                row = g.db.execute(
+                    "SELECT * FROM advances WHERE id=? AND driver_id=?",
+                    (advance_id, driver_id),
+                ).fetchone()
+                if not row:
+                    abort(404)
+                amount = float(request.form["amount"])
+                note = request.form.get("note", "").strip()
+                pay_month = row["paid_on"][:7]
+                salary = month_salary(driver, pay_month)
+                month_total = month_advance_sum(driver_id, pay_month, advance_id) + amount
+                if blocks_over_salary(amount, salary, month_total, note):
+                    return redirect(url_for("driver_detail", driver_id=driver_id))
+                g.db.execute(
+                    "UPDATE advances SET amount=?, note=? WHERE id=? AND driver_id=?",
+                    (amount, note, advance_id, driver_id),
+                )
+                audit(g.db, g.user["id"], "UPDATE", "advance", advance_id, str(amount))
+                flash("Advance updated.")
             elif action == "assign":
                 vehicle_id = int(request.form["vehicle_id"])
                 start = request.form["start_date"]
@@ -629,7 +765,42 @@ def create_app():
                     (driver_id, vehicle_id, start),
                 )
                 audit(g.db, g.user["id"], "ASSIGN", "driver", driver_id, str(vehicle_id))
-                flash("Driver assigned to the vehicle.")
+                flash("Vehicle assigned to this driver.")
+            elif action == "update_assignment":
+                assignment_id = int(request.form["assignment_id"])
+                row = g.db.execute(
+                    "SELECT * FROM driver_assignments WHERE id=? AND driver_id=?",
+                    (assignment_id, driver_id),
+                ).fetchone()
+                if not row:
+                    abort(404)
+                vehicle_id = int(request.form["vehicle_id"])
+                start = request.form["start_date"]
+                current = bool(request.form.get("current"))
+                end = None if current else (request.form.get("end_date") or None)
+                if not current and not end:
+                    flash("Pick an end date, or leave Current ticked.")
+                    return redirect(url_for("driver_detail", driver_id=driver_id))
+                if end and end < start:
+                    flash("The end date has to be on or after the start date.")
+                    return redirect(url_for("driver_detail", driver_id=driver_id))
+                g.db.execute(
+                    "UPDATE driver_assignments SET vehicle_id=?, start_date=?, end_date=? WHERE id=?",
+                    (vehicle_id, start, end, assignment_id),
+                )
+                if not end:
+                    g.db.execute(
+                        """UPDATE driver_assignments SET end_date=?
+                           WHERE driver_id=? AND end_date IS NULL AND id!=? AND start_date<?""",
+                        (start, driver_id, assignment_id, start),
+                    )
+                    g.db.execute(
+                        """UPDATE driver_assignments SET end_date=?
+                           WHERE vehicle_id=? AND end_date IS NULL AND id!=? AND start_date<?""",
+                        (start, vehicle_id, assignment_id, start),
+                    )
+                audit(g.db, g.user["id"], "UPDATE", "assignment", assignment_id, str(vehicle_id))
+                flash("Assignment updated.")
             g.db.commit()
             return redirect(url_for("driver_detail", driver_id=driver_id))
         driver = g.db.execute("SELECT * FROM drivers WHERE id=?", (driver_id,)).fetchone()
@@ -651,6 +822,8 @@ def create_app():
             vehicles=vehicles,
             summary=salary_summary(driver),
             can_edit=g.user["role"] in {"ADMIN", "MANAGER"},
+            is_admin=g.user["role"] == "ADMIN",
+            today=date.today().isoformat(),
         )
 
     @app.route("/vehicles", methods=["GET", "POST"])
@@ -903,9 +1076,116 @@ def create_app():
                    ORDER BY ca.end_date IS NOT NULL, v.number""",
                 (company["id"],),
             ).fetchall()
-            fleet.append({"company": company, "vehicles": vehicles})
+            trips = g.db.execute(
+                "SELECT * FROM oncall_bookings WHERE company_id=? ORDER BY trip_date DESC, id DESC",
+                (company["id"],),
+            ).fetchall()
+            fleet.append({
+                "company": company,
+                "vehicles": vehicles,
+                "trips": trips,
+                "bill_total": sum(row["total_amount"] for row in trips),
+            })
         all_vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
         return render_template("companies.html", fleet=fleet, all_vehicles=all_vehicles, today=date.today().isoformat())
+
+    @app.route("/oncall", methods=["GET", "POST"])
+    @roles("ADMIN", "MANAGER")
+    def oncall():
+        companies = g.db.execute("SELECT * FROM companies ORDER BY name").fetchall()
+        trip = request.values.get("trip", "")
+        company_id = request.values.get("company_id", type=int)
+        company = None
+        if trip == "company" and company_id:
+            company = g.db.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
+        if request.method == "POST":
+            if trip == "company" and not company:
+                flash("Select a company for this trip.")
+                return redirect(url_for("oncall", trip="company"))
+            if trip not in {"company", "direct"}:
+                flash("Choose Company or Direct first.")
+                return redirect(url_for("oncall"))
+            vehicle = g.db.execute("SELECT * FROM vehicles WHERE id=?", (int(request.form["vehicle_id"]),)).fetchone()
+            driver = g.db.execute("SELECT * FROM drivers WHERE id=?", (int(request.form["driver_id"]),)).fetchone()
+            if not vehicle or not driver:
+                abort(404)
+            open_km = float(request.form["open_km"])
+            close_km = float(request.form["close_km"])
+            back = url_for("oncall", trip=trip, company_id=company["id"] if company else None)
+            if close_km < open_km:
+                flash("Closing KM cannot be less than Open KM.")
+                return redirect(back)
+            def amount(name):
+                return round(float(request.form.get(name) or 0), 2)
+            charges = {
+                "extra_hour": amount("extra_hour"),
+                "extra_km": amount("extra_km"),
+                "check_post": amount("check_post"),
+                "toll_fees": amount("toll_fees"),
+                "parking": amount("parking"),
+                "waiting": amount("waiting"),
+                "bata": amount("bata"),
+            }
+            total_amount = round(sum(charges.values()), 2)
+            g.db.execute(
+                """INSERT INTO oncall_bookings (
+                     trip_kind, trip_date, company_id, vehicle_id, vehicle_number, driver_id, driver_name, booked_name,
+                     pickup_place, drop_place, open_time, open_km, close_time, close_km, total_km,
+                     extra_hour, extra_km, check_post, toll_fees, parking, waiting, bata,
+                     total_amount, created_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "COMPANY" if company else "DIRECT",
+                    request.form["trip_date"],
+                    company["id"] if company else None,
+                    vehicle["id"], vehicle["number"], driver["id"], driver["name"],
+                    request.form["booked_name"].strip(),
+                    request.form["pickup_place"].strip(), request.form["drop_place"].strip(),
+                    request.form["open_time"], open_km, request.form["close_time"], close_km,
+                    round(close_km - open_km, 1),
+                    charges["extra_hour"], charges["extra_km"], charges["check_post"], charges["toll_fees"],
+                    charges["parking"], charges["waiting"], charges["bata"],
+                    total_amount, datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            audit(g.db, g.user["id"], "CREATE", "oncall", company["id"] if company else None, request.form["booked_name"])
+            g.db.commit()
+            flash("On call booking saved.")
+            return redirect(back)
+        ready = trip == "direct" or company is not None
+        vehicles = []
+        bookings = []
+        if ready and company:
+            vehicles = g.db.execute(
+                """SELECT v.id, v.number, v.model FROM vehicles v
+                   JOIN company_assignments ca ON ca.vehicle_id=v.id
+                   WHERE ca.company_id=? AND ca.end_date IS NULL
+                   ORDER BY v.number""",
+                (company["id"],),
+            ).fetchall()
+            if not vehicles:
+                vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
+            bookings = g.db.execute(
+                "SELECT * FROM oncall_bookings WHERE company_id=? ORDER BY trip_date DESC, id DESC",
+                (company["id"],),
+            ).fetchall()
+        elif ready:
+            vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
+            bookings = g.db.execute(
+                "SELECT * FROM oncall_bookings WHERE trip_kind='DIRECT' ORDER BY trip_date DESC, id DESC"
+            ).fetchall()
+        drivers = g.db.execute("SELECT id, name FROM drivers ORDER BY name").fetchall()
+        return render_template(
+            "oncall.html",
+            companies=companies,
+            company=company,
+            trip=trip,
+            ready=ready,
+            vehicles=vehicles,
+            drivers=drivers,
+            bookings=bookings,
+            today=date.today().isoformat(),
+        )
 
     @app.route("/fuel", methods=["GET", "POST"])
     @login_required
@@ -1261,8 +1541,8 @@ def create_app():
                     vehicles = [own]
             else:
                 drivers = g.db.execute(
-                    "SELECT * FROM drivers WHERE name LIKE ? OR phone LIKE ? OR dl_number LIKE ?",
-                    (f"%{q}%", f"%{q}%", f"%{q}%"),
+                    "SELECT * FROM drivers WHERE name LIKE ? OR phone LIKE ? OR dl_number LIKE ? OR aadhaar LIKE ?",
+                    (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"),
                 ).fetchall()
                 vehicles = g.db.execute(
                     "SELECT * FROM vehicles WHERE number LIKE ? OR model LIKE ?",
