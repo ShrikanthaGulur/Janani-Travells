@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Janani{% endblock %}</title>
-  <link rel="icon" href="{{ url_for('static', filename='janani-logo.png', v=2) }}">
+  <link rel="icon" href="{{ url_for('static', filename='janani-logo.png', v=6) }}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700&display=swap" rel="stylesheet">
@@ -16,7 +16,7 @@
 <div class="shell">
   <aside>
     <div class="brand-row">
-      <a class="brand" href="{{ url_for('driver_home' if me.role == 'DRIVER' else 'dashboard') }}"><img class="logo" src="{{ url_for('static', filename='janani-logo.png', v=2) }}" alt=""><span class="wordmark">Janani</span></a>
+      <a class="brand" href="{{ url_for('driver_home' if me.role == 'DRIVER' else 'dashboard') }}"><img class="logo" src="{{ url_for('static', filename='janani-logo.png', v=6) }}" alt=""><span class="wordmark">Janani</span></a>
       <button type="button" class="menu-btn" id="menu-btn" aria-expanded="false" aria-controls="side-nav">Menu</button>
     </div>
     <nav id="side-nav">
@@ -72,17 +72,25 @@
         <a href="{{ url_for('audit_page') }}">Audit</a>
       </details>
       {% endif %}
+      {% if me.role != 'DRIVER' %}
+      <a class="top-link" href="{{ url_for('oncall') }}">On call booking</a>
+      {% endif %}
     </nav>
     <div class="who">{{ me.name }}<br><span>{{ me.role }}</span><br><a href="{{ url_for('logout') }}">Sign out</a></div>
   </aside>
   <main>
+    {% if request.endpoint not in ['dashboard', 'driver_home'] %}
+    <p class="page-back"><button type="button" class="back-arrow" id="back-btn" data-home="{{ url_for('driver_home' if me.role == 'DRIVER' else 'dashboard') }}" aria-label="Dashboard">←</button></p>
+    {% endif %}
     <form class="search" action="{{ url_for('search') }}" method="get">
-      <input name="q" placeholder="Search driver or vehicle number" value="{{ request.args.get('q','') }}">
+      <input name="q" placeholder="Search name, phone, licence, Aadhaar, or vehicle" value="{{ request.args.get('q','') }}">
       <button>Search</button>
       {% if request.args.get('q') %}<a class="clear-search" href="{{ url_for('driver_home' if me.role == 'DRIVER' else 'dashboard') }}">Clear</a>{% endif %}
     </form>
-    {% with messages = get_flashed_messages() %}
-      {% for message in messages %}<div class="flash">{{ message }}</div>{% endfor %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        {% if category == 'toast' %}<div class="toast-backdrop"><div class="toast" role="status">{{ message }}</div></div>{% else %}<div class="flash">{{ message }}</div>{% endif %}
+      {% endfor %}
     {% endwith %}
     {% block content %}{% endblock %}
   </main>
@@ -93,6 +101,6 @@
 {% endwith %}
 {% block bare %}{% endblock %}
 {% endif %}
-<script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='app.js', v=9) }}"></script>
 </body>
 </html>

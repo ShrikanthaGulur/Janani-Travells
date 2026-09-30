@@ -1,7 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<p><a href="{{ url_for('drivers') if can_edit else url_for('driver_home') }}">Back</a></p>
-<h1>{{ driver.name }}</h1>
+<h1><a class="back-label" href="{{ url_for('drivers') if can_edit else url_for('driver_home') }}">Back</a> {{ driver.name }}</h1>
 <section class="cards">
   <article><span>Monthly salary</span><strong>₹{{ '%.0f'|format(summary.monthly) }}</strong></article>
   <article><span>Advance this month</span><strong>₹{{ '%.0f'|format(summary.advance_month) }}</strong></article>
@@ -12,8 +11,10 @@
 <form method="post" enctype="multipart/form-data" class="form-grid">
   <input type="hidden" name="action" value="profile">
   <label>Name<input name="name" value="{{ driver.name }}" required></label>
-  <label>Phone<input name="phone" value="{{ driver.phone }}" required></label>
+  <label class="phone-label">Phone<span class="phone-row"><span class="dial">+91</span><input name="phone" value="{{ driver.phone }}" required inputmode="numeric" maxlength="10" pattern="[0-9]{10}" placeholder="10 digits"></span></label>
   <label>Address<input name="address" value="{{ driver.address }}"></label>
+  <label>Aadhaar number<input name="aadhaar" value="{{ driver.aadhaar }}" inputmode="numeric" maxlength="12" pattern="[0-9]{12}" placeholder="12 digits"></label>
+  <label>Aadhaar copy<input type="file" name="aadhaar_copy" accept=".pdf,.png,.jpg,.jpeg,.webp"></label>
   <label>DL number<input name="dl_number" value="{{ driver.dl_number }}"></label>
   <label>DL expiry<input type="date" name="dl_expiry" value="{{ driver.dl_expiry or '' }}"></label>
   <label>Monthly salary<input type="number" step="0.01" name="monthly_salary" value="{{ driver.monthly_salary }}"></label>
@@ -21,34 +22,79 @@
   <button>Update profile</button>
 </form>
 {% else %}
-<p>{{ driver.address }} · Licence {{ driver.dl_number }} · expires {{ driver.dl_expiry or '—' }}</p>
+<p>{{ driver.country_code or '+91' }} {{ driver.phone }} · {{ driver.address }} · Aadhaar {{ driver.aadhaar or '—' }} · Licence {{ driver.dl_number }} · expires {{ driver.dl_expiry or '—' }}</p>
 {% endif %}
+{% if driver.aadhaar_copy %}<p><a href="{{ url_for('files', name=driver.aadhaar_copy) }}">Open Aadhaar copy</a></p>{% endif %}
 {% if driver.dl_copy %}<p><a href="{{ url_for('files', name=driver.dl_copy) }}">Open licence copy</a></p>{% endif %}
-<h2>Assignment history</h2>
-<table>
-  <tr><th>Vehicle</th><th>Model</th><th>From</th><th>To</th></tr>
-  {% for row in history %}
-  <tr><td>{{ row.number }}</td><td>{{ row.model }}</td><td>{{ row.start_date }}</td><td>{{ row.end_date or 'Current' }}</td></tr>
-  {% endfor %}
-</table>
+<h2>Assign vehicle</h2>
 {% if can_edit %}
 <form method="post" class="inline">
   <input type="hidden" name="action" value="assign">
   <select name="vehicle_id">{% for v in vehicles %}<option value="{{ v.id }}">{{ v.number }} · {{ v.model }}</option>{% endfor %}</select>
-  <input type="date" name="start_date" required>
-  <button>Assign</button>
+  <input class="pick-date" name="start_date" value="{{ today }}" placeholder="Start date" required autocomplete="off" readonly>
+  <button>Assign vehicle</button>
 </form>
-<h2>Advances</h2>
+{% endif %}
+<h2>Assignment history</h2>
 <table>
-  <tr><th>Date</th><th>Amount</th><th>Note</th></tr>
-  {% for row in advances %}<tr><td>{{ row.paid_on }}</td><td>₹{{ '%.0f'|format(row.amount) }}</td><td>{{ row.note }}</td></tr>{% endfor %}
+  <tr><th>Vehicle</th><th>Model</th><th>From</th><th>To</th>{% if can_edit %}<th>Update</th>{% endif %}</tr>
+  {% for row in history %}
+  <tr>
+    <td>{{ row.number }}</td>
+    <td>{{ row.model }}</td>
+    <td>{{ row.start_date }}</td>
+    <td>{{ row.end_date or 'Current' }}</td>
+    {% if can_edit %}
+    <td>
+      <form method="post" class="inline">
+        <input type="hidden" name="action" value="update_assignment">
+        <input type="hidden" name="assignment_id" value="{{ row.id }}">
+        <select name="vehicle_id">
+          {% for v in vehicles %}<option value="{{ v.id }}" {% if v.id == row.vehicle_id %}selected{% endif %}>{{ v.number }} · {{ v.model }}</option>{% endfor %}
+        </select>
+        <input class="pick-date" name="start_date" value="{{ row.start_date }}" required autocomplete="off" readonly>
+        <input class="pick-date" name="end_date" value="{{ row.end_date or '' }}" placeholder="End date" autocomplete="off" readonly>
+        <label class="check"><input type="checkbox" name="current" {% if not row.end_date %}checked{% endif %}> Current</label>
+        <button>Update</button>
+      </form>
+    </td>
+    {% endif %}
+  </tr>
+  {% else %}
+  <tr><td colspan="5">No vehicle assigned yet.</td></tr>
+  {% endfor %}
 </table>
-<form method="post" class="inline">
+{% if can_edit %}
+<h2>Advances</h2>
+<form method="post" class="inline" data-salary="{{ summary.monthly }}" data-taken="{{ summary.advance_month }}" data-old="0">
   <input type="hidden" name="action" value="advance">
   <input type="number" step="0.01" name="amount" placeholder="Amount" required>
-  <input type="date" name="paid_on" required>
-  <input name="note" placeholder="Note">
+  <input class="pick-date" name="paid_on" value="{{ today }}" placeholder="Select date" required autocomplete="off" readonly>
+  <input name="note" placeholder="Emergency note, if the advance is above salary">
   <button>Add advance</button>
 </form>
+<table>
+  <tr><th>Date</th><th>Amount</th><th>Note</th>{% if is_admin %}<th></th>{% endif %}</tr>
+  {% for row in advances %}
+  <tr>
+    <td>{{ row.paid_on }}</td>
+    <td>
+      {% if is_admin %}
+      <form method="post" class="inline" id="edit-advance-{{ row.id }}" {% if row.paid_on.startswith(today[:7]) %}data-salary="{{ summary.monthly }}" data-taken="{{ summary.advance_month }}" data-old="{{ row.amount }}"{% endif %}>
+        <input type="hidden" name="action" value="edit_advance">
+        <input type="hidden" name="advance_id" value="{{ row.id }}">
+        <input type="number" step="0.01" name="amount" value="{{ row.amount }}" required>
+      </form>
+      {% else %}₹{{ '%.0f'|format(row.amount) }}{% endif %}
+    </td>
+    <td>
+      {% if is_admin %}
+      <input form="edit-advance-{{ row.id }}" name="note" value="{{ row.note }}" placeholder="Emergency note, if the advance is above salary">
+      {% else %}{{ row.note }}{% endif %}
+    </td>
+    {% if is_admin %}<td><button form="edit-advance-{{ row.id }}">Update</button></td>{% endif %}
+  </tr>
+  {% endfor %}
+</table>
 {% endif %}
 {% endblock %}

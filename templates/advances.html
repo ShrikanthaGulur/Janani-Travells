@@ -35,12 +35,18 @@
   <label>Salary for {{ month }}<input type="number" step="0.01" name="monthly_salary" value="{{ selected.summary.monthly }}" required></label>
   <button>Save salary</button>
 </form>
-<form method="post" class="form-grid" id="advance-form">
+<form method="post" class="form-grid" id="advance-form" data-salary="{{ selected.summary.monthly }}" data-taken="{{ selected.summary.advance_month }}" data-old="0">
   <input type="hidden" name="action" value="advance">
   <input type="hidden" name="driver_id" value="{{ selected.driver.id }}">
   <input type="hidden" name="month" value="{{ month }}">
   <label>Advance amount<input type="number" step="0.01" name="amount" required></label>
-  <label>Date in {{ month }}<input type="date" name="paid_on" value="{{ today }}" min="{{ month_start }}" max="{{ month_end }}" required></label>
+  <label>Date in {{ month }}
+    <select name="paid_on" required>
+      {% for day in days %}
+      <option value="{{ day }}" {% if day == today %}selected{% endif %}>{{ day }}</option>
+      {% endfor %}
+    </select>
+  </label>
   <label>Payment mode
     <select name="payment_mode" id="payment-mode">
       <option>Cash</option>
@@ -49,24 +55,39 @@
     </select>
   </label>
   <label id="txn-field">Transaction ID<input name="transaction_id" placeholder="Optional for UPI or bank transfer"></label>
-  <label>Note<input name="note" placeholder="10 Sep advance"></label>
+  <label>Note<input name="note" placeholder="Emergency note, if the advance is above salary"></label>
   <button>Deduct advance</button>
 </form>
 {% endif %}
 <table>
-  <tr><th>Date</th><th>Advance</th><th>Balance</th><th>Mode</th><th>Transaction ID</th><th>Note</th></tr>
-  <tr><td>{{ month }}</td><td>—</td><td>₹{{ '%.0f'|format(selected.summary.monthly) }}</td><td>—</td><td>—</td><td>Salary for this month</td></tr>
+  <tr><th>Date</th><th>Advance</th><th>Balance</th><th>Mode</th><th>Transaction ID</th><th>Note</th>{% if is_admin %}<th></th>{% endif %}</tr>
+  <tr><td>{{ month }}</td><td>—</td><td>₹{{ '%.0f'|format(selected.summary.monthly) }}</td><td>—</td><td>—</td><td>Salary for this month</td>{% if is_admin %}<td></td>{% endif %}</tr>
   {% for line in selected.lines %}
   <tr>
     <td>{{ line.paid_on }}</td>
-    <td>₹{{ '%.0f'|format(line.amount) }}</td>
+    <td>
+      {% if is_admin %}
+      <form method="post" class="inline" id="edit-advance-{{ line.id }}" data-salary="{{ selected.summary.monthly }}" data-taken="{{ selected.summary.advance_month }}" data-old="{{ line.amount }}">
+        <input type="hidden" name="action" value="edit_advance">
+        <input type="hidden" name="driver_id" value="{{ selected.driver.id }}">
+        <input type="hidden" name="month" value="{{ month }}">
+        <input type="hidden" name="advance_id" value="{{ line.id }}">
+        <input type="number" step="0.01" name="amount" value="{{ line.amount }}" required>
+      </form>
+      {% else %}₹{{ '%.0f'|format(line.amount) }}{% endif %}
+    </td>
     <td>₹{{ '%.0f'|format(line.balance) }}</td>
     <td>{{ line.payment_mode }}</td>
     <td>{{ line.transaction_id or '—' }}</td>
-    <td>{{ line.note }}</td>
+    <td>
+      {% if is_admin %}
+      <input form="edit-advance-{{ line.id }}" name="note" value="{{ line.note }}" placeholder="Emergency note, if the advance is above salary">
+      {% else %}{{ line.note }}{% endif %}
+    </td>
+    {% if is_admin %}<td><button form="edit-advance-{{ line.id }}">Update</button></td>{% endif %}
   </tr>
   {% else %}
-  <tr><td colspan="6">No advance payments in {{ month }}.</td></tr>
+  <tr><td colspan="{{ 7 if is_admin else 6 }}">No advance payments in {{ month }}.</td></tr>
   {% endfor %}
 </table>
 {% endif %}

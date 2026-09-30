@@ -25,7 +25,10 @@ CREATE TABLE IF NOT EXISTS drivers (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
   phone TEXT UNIQUE NOT NULL,
+  country_code TEXT NOT NULL DEFAULT '+91',
   address TEXT NOT NULL DEFAULT '',
+  aadhaar TEXT NOT NULL DEFAULT '',
+  aadhaar_copy TEXT,
   dl_number TEXT NOT NULL DEFAULT '',
   dl_expiry TEXT,
   dl_copy TEXT,
@@ -87,6 +90,33 @@ CREATE TABLE IF NOT EXISTS companies (
   name TEXT NOT NULL,
   contact TEXT DEFAULT '',
   address TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS oncall_bookings (
+  id INTEGER PRIMARY KEY,
+  trip_kind TEXT NOT NULL DEFAULT 'COMPANY' CHECK(trip_kind IN ('COMPANY','DIRECT')),
+  trip_date TEXT NOT NULL DEFAULT '',
+  company_id INTEGER REFERENCES companies(id),
+  vehicle_id INTEGER REFERENCES vehicles(id),
+  vehicle_number TEXT NOT NULL,
+  driver_id INTEGER REFERENCES drivers(id),
+  driver_name TEXT NOT NULL,
+  booked_name TEXT NOT NULL,
+  pickup_place TEXT NOT NULL,
+  drop_place TEXT NOT NULL,
+  open_time TEXT NOT NULL,
+  open_km REAL NOT NULL,
+  close_time TEXT NOT NULL,
+  close_km REAL NOT NULL,
+  total_km REAL NOT NULL,
+  extra_hour REAL NOT NULL DEFAULT 0,
+  extra_km REAL NOT NULL DEFAULT 0,
+  check_post REAL NOT NULL DEFAULT 0,
+  toll_fees REAL NOT NULL DEFAULT 0,
+  parking REAL NOT NULL DEFAULT 0,
+  waiting REAL NOT NULL DEFAULT 0,
+  bata REAL NOT NULL DEFAULT 0,
+  total_amount REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS company_assignments (
   id INTEGER PRIMARY KEY,
@@ -227,6 +257,59 @@ def init_db():
         conn.execute("ALTER TABLE advances ADD COLUMN payment_mode TEXT NOT NULL DEFAULT 'Cash'")
     if "transaction_id" not in advance_columns:
         conn.execute("ALTER TABLE advances ADD COLUMN transaction_id TEXT DEFAULT ''")
+    driver_columns = [row[1] for row in conn.execute("PRAGMA table_info(drivers)")]
+    if "aadhaar" not in driver_columns:
+        conn.execute("ALTER TABLE drivers ADD COLUMN aadhaar TEXT NOT NULL DEFAULT ''")
+    if "aadhaar_copy" not in driver_columns:
+        conn.execute("ALTER TABLE drivers ADD COLUMN aadhaar_copy TEXT")
+    if "country_code" not in driver_columns:
+        conn.execute("ALTER TABLE drivers ADD COLUMN country_code TEXT NOT NULL DEFAULT '+91'")
+    booking_info = list(conn.execute("PRAGMA table_info(oncall_bookings)"))
+    booking_names = [row[1] for row in booking_info]
+    company_col = next((row for row in booking_info if row[1] == "company_id"), None)
+    if company_col and (company_col[3] == 1 or "trip_date" not in booking_names):
+        conn.execute("ALTER TABLE oncall_bookings RENAME TO oncall_bookings_old")
+        conn.execute(
+            """CREATE TABLE oncall_bookings (
+              id INTEGER PRIMARY KEY,
+              trip_kind TEXT NOT NULL DEFAULT 'COMPANY' CHECK(trip_kind IN ('COMPANY','DIRECT')),
+              trip_date TEXT NOT NULL DEFAULT '',
+              company_id INTEGER REFERENCES companies(id),
+              vehicle_id INTEGER REFERENCES vehicles(id),
+              vehicle_number TEXT NOT NULL,
+              driver_id INTEGER REFERENCES drivers(id),
+              driver_name TEXT NOT NULL,
+              booked_name TEXT NOT NULL,
+              pickup_place TEXT NOT NULL,
+              drop_place TEXT NOT NULL,
+              open_time TEXT NOT NULL,
+              open_km REAL NOT NULL,
+              close_time TEXT NOT NULL,
+              close_km REAL NOT NULL,
+              total_km REAL NOT NULL,
+              extra_hour REAL NOT NULL DEFAULT 0,
+              extra_km REAL NOT NULL DEFAULT 0,
+              check_post REAL NOT NULL DEFAULT 0,
+              toll_fees REAL NOT NULL DEFAULT 0,
+              parking REAL NOT NULL DEFAULT 0,
+              waiting REAL NOT NULL DEFAULT 0,
+              bata REAL NOT NULL DEFAULT 0,
+              total_amount REAL NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO oncall_bookings (
+                 id, trip_kind, trip_date, company_id, vehicle_id, vehicle_number, driver_id, driver_name,
+                 booked_name, pickup_place, drop_place, open_time, open_km, close_time, close_km, total_km,
+                 extra_hour, extra_km, check_post, toll_fees, parking, waiting, bata, total_amount, created_at
+               )
+               SELECT id, 'COMPANY', '', company_id, vehicle_id, vehicle_number, driver_id, driver_name,
+                      booked_name, pickup_place, drop_place, open_time, open_km, close_time, close_km, total_km,
+                      extra_hour, extra_km, check_post, toll_fees, parking, waiting, bata, total_amount, created_at
+               FROM oncall_bookings_old"""
+        )
+        conn.execute("DROP TABLE oncall_bookings_old")
     if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0:
         seed(conn)
     if conn.execute("SELECT COUNT(*) AS c FROM checklist_items").fetchone()["c"] == 0:

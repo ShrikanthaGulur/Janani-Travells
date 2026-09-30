@@ -22,6 +22,33 @@
     <tr><td colspan="7">No vehicles assigned yet.</td></tr>
     {% endfor %}
   </table>
+  <h3>On call trips</h3>
+  <table>
+    <tr>
+      <th>Date</th><th>Booked name</th><th>Vehicle</th><th>Driver</th><th>Pickup</th><th>Drop</th>
+      <th>Total KM</th><th>Total amount</th>
+    </tr>
+    {% for row in item.trips %}
+    <tr>
+      <td>{{ row.trip_date }}</td>
+      <td>{{ row.booked_name }}</td>
+      <td>{{ row.vehicle_number }}</td>
+      <td>{{ row.driver_name }}</td>
+      <td>{{ row.pickup_place }}</td>
+      <td>{{ row.drop_place }}</td>
+      <td>{{ '%.1f'|format(row.total_km) }}</td>
+      <td>₹{{ '%.2f'|format(row.total_amount) }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8">No on call trips for this company yet.</td></tr>
+    {% endfor %}
+    {% if item.trips %}
+    <tr>
+      <td colspan="7"><strong>Billing total</strong></td>
+      <td><strong>₹{{ '%.2f'|format(item.bill_total) }}</strong></td>
+    </tr>
+    {% endif %}
+  </table>
   <form method="post" class="inline">
     <input type="hidden" name="action" value="assign">
     <input type="hidden" name="company_id" value="{{ item.company.id }}">

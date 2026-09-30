@@ -2,7 +2,7 @@
 {% block content %}
 <h1>Search “{{ q }}”</h1>
 <h2>Drivers</h2>
-{% if drivers %}<ul>{% for d in drivers %}<li><a href="{{ url_for('driver_detail', driver_id=d.id) }}">{{ d.name }}</a> · {{ d.phone }}</li>{% endfor %}</ul>{% else %}<p>No drivers.</p>{% endif %}
+{% if drivers %}<ul>{% for d in drivers %}<li><a href="{{ url_for('driver_detail', driver_id=d.id) }}">{{ d.name }}</a> · {{ d.country_code or '+91' }} {{ d.phone }}</li>{% endfor %}</ul>{% else %}<p>No drivers.</p>{% endif %}
 <h2>Vehicles</h2>
 {% if vehicles %}<ul>{% for v in vehicles %}<li><a href="{{ url_for('vehicle_detail', vehicle_id=v.id) }}">{{ v.number }}</a> · {{ v.model }}</li>{% endfor %}</ul>{% else %}<p>No vehicles.</p>{% endif %}
 {% endblock %}

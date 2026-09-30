@@ -1,7 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<p><a href="{{ url_for('vehicles') if can_edit else url_for('driver_home') }}">Back</a></p>
-<h1>{{ vehicle.number }} <small>{{ vehicle.model }} · {{ vehicle.seats }} seater</small></h1>
+<h1><a class="back-label" href="{{ url_for('vehicles') if can_edit else url_for('driver_home') }}">Back</a> {{ vehicle.number }} <small>{{ vehicle.model }} · {{ vehicle.seats }} seater</small></h1>
 <p>Bought {{ vehicle.purchase_date or '—' }} for ₹{{ '%.0f'|format(vehicle.purchase_price) }}. Mileage band {{ vehicle.min_mileage }}–{{ vehicle.max_mileage }} km/l. Service every {{ vehicle.service_interval_km|int }} km or {{ vehicle.service_interval_days }} days.</p>
 {% if can_edit %}
 <details open><summary>Vehicle details</summary>
