@@ -36,8 +36,9 @@
         <a href="{{ url_for('fuel') }}">Fuel</a>
         <a href="{{ url_for('mileage') }}">Mileage &amp; profit</a>
       </details>
-      <details {% if page in ['maintenance','notifications'] %}open{% endif %}>
+      <details {% if page in ['maintenance','service_entry','notifications'] %}open{% endif %}>
         <summary>Maintenance</summary>
+        <a href="{{ url_for('service_entry') }}">Service</a>
         <a href="{{ url_for('maintenance') }}">Service watch</a>
         <a href="{{ url_for('notifications') }}">Alerts{% if unread %} <span class="badge">{{ unread }}</span>{% endif %}</a>
       </details>

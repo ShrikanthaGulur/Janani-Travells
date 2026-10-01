@@ -915,12 +915,58 @@ def create_app():
                 )
                 audit(g.db, g.user["id"], "UPDATE", "vehicle", vehicle_id, "profile")
             elif action == "document":
+                kind = request.form.get("kind", "")
+                if kind not in DOC_KINDS:
+                    flash("Choose RC, Insurance, FC, Permit, or Pollution.")
+                else:
+                    path = save_upload(request.files.get("file"))
+                    expiry = request.form.get("expiry_date") or None
+                    existing = g.db.execute(
+                        "SELECT id FROM documents WHERE vehicle_id=? AND kind=? ORDER BY id DESC LIMIT 1",
+                        (vehicle_id, kind),
+                    ).fetchone()
+                    if existing:
+                        if path:
+                            g.db.execute(
+                                "UPDATE documents SET expiry_date=?, file_path=? WHERE id=?",
+                                (expiry, path, existing["id"]),
+                            )
+                        else:
+                            g.db.execute(
+                                "UPDATE documents SET expiry_date=? WHERE id=?",
+                                (expiry, existing["id"]),
+                            )
+                        audit(g.db, g.user["id"], "UPDATE", "document", vehicle_id, kind)
+                        flash(f"{kind} updated.")
+                    else:
+                        g.db.execute(
+                            "INSERT INTO documents (vehicle_id, kind, expiry_date, file_path) VALUES (?,?,?,?)",
+                            (vehicle_id, kind, expiry, path),
+                        )
+                        audit(g.db, g.user["id"], "CREATE", "document", vehicle_id, kind)
+                        flash(f"{kind} added.")
+            elif action == "update_document":
+                document_id = int(request.form["document_id"])
+                row = g.db.execute(
+                    "SELECT * FROM documents WHERE id=? AND vehicle_id=?",
+                    (document_id, vehicle_id),
+                ).fetchone()
+                if not row:
+                    abort(404)
+                expiry = request.form.get("expiry_date") or None
                 path = save_upload(request.files.get("file"))
-                g.db.execute(
-                    "INSERT INTO documents (vehicle_id, kind, expiry_date, file_path) VALUES (?,?,?,?)",
-                    (vehicle_id, request.form["kind"], request.form.get("expiry_date") or None, path),
-                )
-                audit(g.db, g.user["id"], "CREATE", "document", vehicle_id, request.form["kind"])
+                if path:
+                    g.db.execute(
+                        "UPDATE documents SET expiry_date=?, file_path=? WHERE id=?",
+                        (expiry, path, document_id),
+                    )
+                else:
+                    g.db.execute(
+                        "UPDATE documents SET expiry_date=? WHERE id=?",
+                        (expiry, document_id),
+                    )
+                audit(g.db, g.user["id"], "UPDATE", "document", vehicle_id, row["kind"])
+                flash(f"{row['kind']} updated.")
             elif action == "photo":
                 path = save_upload(request.files.get("file"))
                 if path:
@@ -951,20 +997,6 @@ def create_app():
                     (vehicle_id, int(request.form["company_id"]), start, end),
                 )
                 audit(g.db, g.user["id"], "ASSIGN", "vehicle", vehicle_id, request.form["company_id"])
-            elif action == "service":
-                g.db.execute(
-                    """INSERT INTO services (vehicle_id, service_type, cost, service_date, km_reading, notes)
-                       VALUES (?,?,?,?,?,?)""",
-                    (
-                        vehicle_id,
-                        request.form["service_type"].strip(),
-                        float(request.form.get("cost") or 0),
-                        request.form["service_date"],
-                        float(request.form["km_reading"]) if request.form.get("km_reading") else None,
-                        request.form.get("notes", ""),
-                    ),
-                )
-                audit(g.db, g.user["id"], "CREATE", "service", vehicle_id, request.form["service_type"])
             elif action == "tyre":
                 if request.form.get("replace_id"):
                     g.db.execute(
@@ -989,9 +1021,42 @@ def create_app():
                         "UPDATE accessories SET present=?, checked_on=? WHERE id=?",
                         (1 if str(row["id"]) in checked else 0, date.today().isoformat(), row["id"]),
                     )
+            elif action == "assign_driver":
+                driver = g.db.execute(
+                    "SELECT * FROM drivers WHERE id=?", (int(request.form["driver_id"]),)
+                ).fetchone()
+                start = request.form.get("start_date", "").strip()
+                if not driver:
+                    flash("Choose a driver.")
+                elif not start:
+                    flash("Pick a start date.")
+                elif g.db.execute(
+                    """SELECT id FROM driver_assignments
+                       WHERE vehicle_id=? AND driver_id=? AND end_date IS NULL""",
+                    (vehicle_id, driver["id"]),
+                ).fetchone():
+                    flash(f"{driver['name']} is already the driver of this vehicle.")
+                else:
+                    g.db.execute(
+                        "UPDATE driver_assignments SET end_date=? WHERE driver_id=? AND end_date IS NULL AND start_date<?",
+                        (start, driver["id"], start),
+                    )
+                    g.db.execute(
+                        "UPDATE driver_assignments SET end_date=? WHERE vehicle_id=? AND end_date IS NULL AND start_date<?",
+                        (start, vehicle_id, start),
+                    )
+                    g.db.execute(
+                        "INSERT INTO driver_assignments (driver_id, vehicle_id, start_date) VALUES (?,?,?)",
+                        (driver["id"], vehicle_id, start),
+                    )
+                    audit(g.db, g.user["id"], "ASSIGN", "vehicle", vehicle_id, str(driver["id"]))
+                    flash(f"{driver['name']} assigned to this vehicle.")
             g.db.commit()
             return redirect(url_for("vehicle_detail", vehicle_id=vehicle_id))
         docs = g.db.execute("SELECT * FROM documents WHERE vehicle_id=? ORDER BY kind", (vehicle_id,)).fetchall()
+        docs = sorted(docs, key=lambda row: DOC_KINDS.index(row["kind"]) if row["kind"] in DOC_KINDS else 99)
+        saved_kinds = {row["kind"] for row in docs}
+        missing_kinds = [kind for kind in DOC_KINDS if kind not in saved_kinds]
         photos = g.db.execute("SELECT * FROM vehicle_photos WHERE vehicle_id=?", (vehicle_id,)).fetchall()
         logs = g.db.execute(
             "SELECT * FROM mileage_logs WHERE vehicle_id=? ORDER BY log_date DESC", (vehicle_id,)
@@ -1014,9 +1079,27 @@ def create_app():
         fuels = g.db.execute(
             "SELECT * FROM fuel_entries WHERE vehicle_id=? ORDER BY entry_date DESC", (vehicle_id,)
         ).fetchall()
+        driver_history = g.db.execute(
+            """SELECT a.*, d.name, d.phone, d.country_code
+               FROM driver_assignments a JOIN drivers d ON d.id=a.driver_id
+               WHERE a.vehicle_id=? ORDER BY a.start_date DESC, a.id DESC""",
+            (vehicle_id,),
+        ).fetchall()
+        current_driver = next((row for row in driver_history if not row["end_date"]), None)
+        drivers = g.db.execute(
+            """SELECT d.id, d.name,
+                      (SELECT v.number FROM driver_assignments a
+                       JOIN vehicles v ON v.id=a.vehicle_id
+                       WHERE a.driver_id=d.id AND a.end_date IS NULL
+                       ORDER BY a.start_date DESC LIMIT 1) AS current_number
+               FROM drivers d ORDER BY d.name"""
+        ).fetchall()
         return render_template(
             "vehicle.html",
             vehicle=vehicle,
+            current_driver=current_driver,
+            driver_history=driver_history,
+            drivers=drivers,
             docs=docs,
             photos=photos,
             logs=logs,
@@ -1027,6 +1110,7 @@ def create_app():
             accessories=accessories,
             fuels=fuels,
             kinds=DOC_KINDS,
+            missing_kinds=missing_kinds,
             positions=POSITIONS,
             can_edit=g.user["role"] in {"ADMIN", "MANAGER"},
             today=date.today().isoformat(),
@@ -1238,6 +1322,64 @@ def create_app():
         rows = g.db.execute(sql, args).fetchall()
         vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
         return render_template("fuel.html", rows=rows, vehicles=vehicles, vehicle_id=vehicle_id, start=start, end=end, today=date.today().isoformat())
+
+    @app.route("/service", methods=["GET", "POST"])
+    @roles("ADMIN", "MANAGER")
+    def service_entry():
+        if request.method == "POST":
+            vehicle = g.db.execute(
+                "SELECT id FROM vehicles WHERE id=?", (int(request.form["vehicle_id"]),)
+            ).fetchone()
+            if not vehicle:
+                abort(404)
+            service_type = request.form.get("service_type", "").strip()
+            service_date = request.form.get("service_date", "").strip()
+            if not service_type or not service_date:
+                flash("Enter the service type and date.")
+                return redirect(url_for("service_entry"))
+            km = request.form.get("km_reading", "").strip()
+            g.db.execute(
+                """INSERT INTO services (vehicle_id, service_type, cost, service_date, km_reading, notes)
+                   VALUES (?,?,?,?,?,?)""",
+                (
+                    vehicle["id"],
+                    service_type,
+                    float(request.form.get("cost") or 0),
+                    service_date,
+                    float(km) if km else None,
+                    request.form.get("notes", "").strip(),
+                ),
+            )
+            audit(g.db, g.user["id"], "CREATE", "service", vehicle["id"], service_type)
+            g.db.commit()
+            flash("Service saved.")
+            return redirect(url_for("service_entry", vehicle_id=vehicle["id"]))
+        vehicle_id = request.args.get("vehicle_id", "")
+        start = request.args.get("start", "")
+        end = request.args.get("end", "")
+        sql = """SELECT s.*, v.number FROM services s JOIN vehicles v ON v.id=s.vehicle_id WHERE 1=1"""
+        args = []
+        if vehicle_id:
+            sql += " AND s.vehicle_id=?"
+            args.append(vehicle_id)
+        if start:
+            sql += " AND s.service_date>=?"
+            args.append(start)
+        if end:
+            sql += " AND s.service_date<=?"
+            args.append(end)
+        sql += " ORDER BY s.service_date DESC"
+        rows = g.db.execute(sql, args).fetchall()
+        vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
+        return render_template(
+            "service.html",
+            rows=rows,
+            vehicles=vehicles,
+            vehicle_id=vehicle_id,
+            start=start,
+            end=end,
+            today=date.today().isoformat(),
+        )
 
     @app.route("/maintenance")
     @login_required
