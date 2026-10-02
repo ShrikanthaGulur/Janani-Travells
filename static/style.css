@@ -32,6 +32,9 @@ nav a, .who a { color: #f7f4ff; text-decoration: none; padding: 8px 10px; border
 nav a:hover { background: rgba(255,255,255,0.08); }
 .badge { background: #ddd6fe; color: #3f3478; border-radius: 99px; padding: 0 6px; font-size: 0.75rem; }
 .who { margin-top: auto; font-size: 0.92rem; }
+.credit { margin: 0; font-size: 0.72rem; letter-spacing: 0.04em; opacity: 0.72; line-height: 1.4; }
+.credit strong { font-weight: 650; }
+.login .credit { margin-top: 18px; text-align: center; color: #6b6280; opacity: 1; }
 main { padding: 22px 28px 48px; }
 .page-back { margin: 0 0 12px; }
 button.back-arrow { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--ink); font-size: 1.3rem; }
@@ -43,6 +46,7 @@ input, select, button { font: inherit; padding: 8px 10px; border-radius: 8px; bo
 button { background: var(--pine); color: white; border: 0; cursor: pointer; }
 button.secondary { background: transparent; color: var(--pine); border: 1px solid var(--pine); }
 table { width: 100%; border-collapse: collapse; background: var(--panel); }
+.save-day { margin-top: 22px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 0.94rem; }
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .cards article { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
@@ -90,7 +94,7 @@ input[type="date"], input[type="month"], input[type="time"] { width: 11.5rem; ma
   .shell { grid-template-columns: 1fr; align-content: start; }
   aside { position: sticky; top: 0; z-index: 5; padding: 12px 14px; gap: 10px; align-self: start; width: 100%; }
   .menu-btn { display: inline-flex; align-items: center; background: rgba(255,255,255,0.16); color: #f7f4ff; min-height: 40px; }
-  aside:not(.open) nav, aside:not(.open) .who { display: none; }
+  aside:not(.open) nav, aside:not(.open) .who, aside:not(.open) .credit { display: none; }
   aside.open { min-height: 100vh; }
   aside.open ~ main { display: none; }
   nav { flex-direction: column; }

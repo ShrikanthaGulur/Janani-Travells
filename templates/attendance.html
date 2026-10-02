@@ -28,11 +28,11 @@
   </table>
 </div>
 {% if can_manage or can_punch %}
-<h2>Mark {{ work_date }}</h2>
+<h2>Update attendance for {{ work_date }}</h2>
 <form class="filters" method="get">
   <input type="hidden" name="month" value="{{ month }}">
   <label>Date<input type="date" name="work_date" value="{{ work_date }}" min="{{ month }}-01" max="{{ days[-1] }}"></label>
-  <button>Load day</button>
+  <button>Apply</button>
 </form>
 <form method="post">
   <input type="hidden" name="month" value="{{ month }}">
@@ -58,7 +58,7 @@
     </tr>
     {% endfor %}
   </table>
-  <button>Save this day</button>
+  <button class="save-day">Save this day</button>
   {% else %}
   {% set mark = marked.get(sheet[0].driver.id) if sheet else none %}
   <div class="form-grid">
