@@ -27,6 +27,7 @@
     {% endfor %}
   </table>
 </div>
+{% if can_manage or can_punch %}
 <h2>Mark {{ work_date }}</h2>
 <form class="filters" method="get">
   <input type="hidden" name="month" value="{{ month }}">
@@ -36,7 +37,7 @@
 <form method="post">
   <input type="hidden" name="month" value="{{ month }}">
   <input type="hidden" name="work_date" value="{{ work_date }}">
-  {% if can_edit %}
+  {% if can_manage %}
   <table>
     <tr><th>Driver</th><th>Status</th><th>In</th><th>Out</th><th>Note</th></tr>
     {% for item in sheet %}
@@ -75,4 +76,5 @@
   </div>
   {% endif %}
 </form>
+{% endif %}
 {% endblock %}

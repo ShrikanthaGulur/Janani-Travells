@@ -11,6 +11,7 @@
   </tr>
   {% endfor %}
 </table>
+{% if can_edit %}
 <h2>Add a driver</h2>
 <form method="post" enctype="multipart/form-data" class="form-grid">
   <label>Name<input name="name" required></label>
@@ -24,4 +25,5 @@
   <label>DL copy<input type="file" name="dl_copy" accept=".pdf,.png,.jpg,.jpeg,.webp"></label>
   <button>Save driver</button>
 </form>
+{% endif %}
 {% endblock %}

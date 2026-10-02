@@ -1,18 +1,18 @@
 {% extends "base.html" %}
 {% block content %}
-<h1><a class="back-label" href="{{ url_for('vehicles') if can_edit else url_for('driver_home') }}">Back</a> {{ vehicle.number }} <small>{{ vehicle.model }} · {{ vehicle.seats }} seater</small></h1>
+<h1><a class="back-label" href="{{ url_for('driver_home' if me.role == 'DRIVER' else 'vehicles') }}">Back</a> {{ vehicle.number }} <small>{{ vehicle.model }} · {{ vehicle.seats }} seater</small></h1>
 <p>Bought {{ vehicle.purchase_date or '—' }} for ₹{{ '%.0f'|format(vehicle.purchase_price) }}. Mileage band {{ vehicle.min_mileage }}–{{ vehicle.max_mileage }} km/l. Service every {{ vehicle.service_interval_km|int }} km or {{ vehicle.service_interval_days }} days.</p>
 <h2>Driver</h2>
 {% if current_driver %}
 <p>
-  {% if can_edit %}<a href="{{ url_for('driver_detail', driver_id=current_driver.driver_id) }}">{{ current_driver.name }}</a>{% else %}{{ current_driver.name }}{% endif %}
+  {% if me.role != 'DRIVER' %}<a href="{{ url_for('driver_detail', driver_id=current_driver.driver_id) }}">{{ current_driver.name }}</a>{% else %}{{ current_driver.name }}{% endif %}
   · {{ current_driver.country_code or '+91' }} {{ current_driver.phone }}
   · since {{ current_driver.start_date }}
 </p>
 {% else %}
 <p>No driver assigned.</p>
 {% endif %}
-{% if can_edit %}
+{% if can_allocate %}
 <form method="post" class="inline">
   <input type="hidden" name="action" value="assign_driver">
   <select name="driver_id" required>
@@ -28,7 +28,7 @@
   <tr><th>Driver</th><th>Phone</th><th>From</th><th>To</th></tr>
   {% for row in driver_history %}
   <tr>
-    <td>{% if can_edit %}<a href="{{ url_for('driver_detail', driver_id=row.driver_id) }}">{{ row.name }}</a>{% else %}{{ row.name }}{% endif %}</td>
+    <td>{% if me.role != 'DRIVER' %}<a href="{{ url_for('driver_detail', driver_id=row.driver_id) }}">{{ row.name }}</a>{% else %}{{ row.name }}{% endif %}</td>
     <td>{{ row.country_code or '+91' }} {{ row.phone }}</td>
     <td>{{ row.start_date }}</td>
     <td>{{ row.end_date or 'Current' }}</td>
@@ -56,12 +56,12 @@
 {% endif %}
 <h2>Documents</h2>
 <table>
-  <tr><th>Kind</th><th>Expiry</th><th>File</th>{% if can_edit %}<th></th>{% endif %}</tr>
+  <tr><th>Kind</th><th>Expiry</th><th>File</th>{% if can_docs %}<th></th>{% endif %}</tr>
   {% for d in docs %}
   <tr>
     <td>{{ d.kind }}</td>
     <td>
-      {% if can_edit %}
+      {% if can_docs %}
       <form method="post" enctype="multipart/form-data" id="doc-{{ d.id }}">
         <input type="hidden" name="action" value="update_document">
         <input type="hidden" name="document_id" value="{{ d.id }}">
@@ -71,15 +71,15 @@
     </td>
     <td>
       {% if d.file_path %}<a href="{{ url_for('files', name=d.file_path) }}">Open</a>{% else %}—{% endif %}
-      {% if can_edit %}<input form="doc-{{ d.id }}" type="file" name="file" accept=".pdf,.png,.jpg,.jpeg,.webp">{% endif %}
+      {% if can_docs %}<input form="doc-{{ d.id }}" type="file" name="file" accept=".pdf,.png,.jpg,.jpeg,.webp">{% endif %}
     </td>
-    {% if can_edit %}<td><button form="doc-{{ d.id }}">Update</button></td>{% endif %}
+    {% if can_docs %}<td><button form="doc-{{ d.id }}">Update</button></td>{% endif %}
   </tr>
   {% else %}
   <tr><td colspan="4">No documents yet.</td></tr>
   {% endfor %}
 </table>
-{% if can_edit and missing_kinds %}
+{% if can_docs and missing_kinds %}
 <form method="post" enctype="multipart/form-data" class="inline">
   <input type="hidden" name="action" value="document">
   <select name="kind">{% for k in missing_kinds %}<option>{{ k }}</option>{% endfor %}</select>
@@ -132,7 +132,7 @@
   {% for row in fuels %}<tr><td>{{ row.entry_date }}</td><td>{{ row.litres }}</td><td>₹{{ '%.0f'|format(row.cost) }}</td><td>{{ row.km_reading }}</td></tr>{% endfor %}
 </table>
 <h2>Maintenance</h2>
-{% if can_edit %}<p><a href="{{ url_for('service_entry', vehicle_id=vehicle.id) }}">Enter service</a></p>{% endif %}
+{% if can_service %}<p><a href="{{ url_for('service_entry', vehicle_id=vehicle.id) }}">Enter service</a></p>{% endif %}
 <table>
   <tr><th>Type</th><th>Date</th><th>KM</th><th>Cost</th><th>Notes</th></tr>
   {% for row in services %}<tr><td>{{ row.service_type }}</td><td>{{ row.service_date }}</td><td>{{ row.km_reading or '—' }}</td><td>₹{{ '%.0f'|format(row.cost) }}</td><td>{{ row.notes }}</td></tr>{% endfor %}

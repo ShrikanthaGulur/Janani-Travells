@@ -22,6 +22,7 @@
 <h2>Recent fuel</h2>
 <table>{% for row in fuels %}<tr><td>{{ row.entry_date }}</td><td>{{ row.litres }} L</td><td>{{ row.km_reading }} km</td></tr>{% endfor %}</table>
 <h2>Maintenance on this vehicle</h2>
+<p><a href="{{ url_for('service_entry', vehicle_id=vehicle.id) }}">Enter service</a></p>
 <table>{% for row in services %}<tr><td>{{ row.service_date }}</td><td>{{ row.service_type }}</td><td>₹{{ '%.0f'|format(row.cost) }}</td></tr>{% else %}<tr><td>No service records.</td></tr>{% endfor %}</table>
 {% else %}
 <p>No vehicle is assigned right now.</p>

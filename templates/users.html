@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Users</h1>
+<p>Admin accounts have every permission. A manager can view the desk, and only the extra permissions you tick.</p>
+<table>
+  <tr><th>Name</th><th>Phone</th><th>Role</th><th>Extra permissions</th></tr>
+  {% for person in people %}
+  <tr>
+    <td>{{ person.name }}</td>
+    <td>{{ person.phone }}</td>
+    <td>{{ person.role }}</td>
+    <td>
+      {% if person.role == 'DRIVER' %}
+      Driver account
+      {% else %}
+      <form method="post" class="inline">
+        <input type="hidden" name="action" value="access">
+        <input type="hidden" name="user_id" value="{{ person.id }}">
+        <select name="role">
+          <option value="ADMIN" {% if person.role == 'ADMIN' %}selected{% endif %}>Admin</option>
+          <option value="MANAGER" {% if person.role == 'MANAGER' %}selected{% endif %}>Manager</option>
+        </select>
+        <label class="check"><input type="checkbox" name="allocate_vehicle" {% if 'allocate_vehicle' in held.get(person.id, []) or person.role == 'ADMIN' %}checked{% endif %}> Vehicle allocation</label>
+        <label class="check"><input type="checkbox" name="reports" {% if 'reports' in held.get(person.id, []) or person.role == 'ADMIN' %}checked{% endif %}> Reports</label>
+        <button>Save</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+<h2>Add an admin or manager</h2>
+<form method="post" class="form-grid">
+  <input type="hidden" name="action" value="create">
+  <label>Name<input name="name" required></label>
+  <label class="phone-label">Phone<span class="phone-row"><span class="dial">+91</span><input name="phone" required inputmode="numeric" maxlength="10" pattern="[0-9]{10}" placeholder="10 digits"></span></label>
+  <label>Role
+    <select name="role">
+      <option value="MANAGER">Manager</option>
+      <option value="ADMIN">Admin</option>
+    </select>
+  </label>
+  <label class="check"><input type="checkbox" name="allocate_vehicle"> Vehicle allocation</label>
+  <label class="check"><input type="checkbox" name="reports"> Reports</label>
+  <button>Save user</button>
+</form>
+{% endblock %}
