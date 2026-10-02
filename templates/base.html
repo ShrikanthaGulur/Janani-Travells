@@ -34,7 +34,7 @@
         <a href="{{ url_for('vehicles') }}">Vehicle details</a>
         <a href="{{ url_for('checklist') }}">Take checklist</a>
         <a href="{{ url_for('fuel') }}">Fuel</a>
-        <a href="{{ url_for('mileage') }}">Mileage &amp; profit</a>
+        {% if 'reports' in grants %}<a href="{{ url_for('mileage') }}">Mileage &amp; profit</a>{% endif %}
       </details>
       <details {% if page in ['maintenance','service_entry','notifications'] %}open{% endif %}>
         <summary>Maintenance</summary>
@@ -46,21 +46,25 @@
         <summary>Companies</summary>
         <a href="{{ url_for('companies') }}">Company details</a>
       </details>
+      {% if 'reports' in grants %}
       <details {% if page == 'reports' %}open{% endif %}>
         <summary>Reports</summary>
         <a href="{{ url_for('reports') }}">Reports &amp; billing</a>
       </details>
+      {% endif %}
       {% else %}
       <details {% if page in ['attendance','advances'] %}open{% endif %}>
         <summary>Drivers</summary>
         <a href="{{ url_for('attendance') }}">Attendance</a>
         <a href="{{ url_for('advances') }}">My advances</a>
       </details>
-      <details {% if page in ['driver_home','vehicle_detail','checklist','fuel'] %}open{% endif %}>
+      <details {% if page in ['driver_home','vehicle_detail','checklist','fuel','service_entry','reports'] %}open{% endif %}>
         <summary>Vehicles</summary>
         <a href="{{ url_for('driver_home') }}">My vehicle</a>
         <a href="{{ url_for('checklist') }}">Take checklist</a>
         <a href="{{ url_for('fuel') }}">Fuel &amp; KM</a>
+        <a href="{{ url_for('service_entry') }}">Service</a>
+        <a href="{{ url_for('reports') }}">My report</a>
       </details>
       <details {% if page == 'notifications' %}open{% endif %}>
         <summary>Maintenance</summary>
@@ -68,8 +72,9 @@
       </details>
       {% endif %}
       {% if me.role == 'ADMIN' %}
-      <details {% if page == 'audit_page' %}open{% endif %}>
+      <details {% if page in ['audit_page','users_admin'] %}open{% endif %}>
         <summary>Admin</summary>
+        <a href="{{ url_for('users_admin') }}">Users</a>
         <a href="{{ url_for('audit_page') }}">Audit</a>
       </details>
       {% endif %}

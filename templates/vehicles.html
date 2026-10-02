@@ -23,6 +23,7 @@
   </tr>
   {% endfor %}
 </table>
+{% if can_edit %}
 <h2>Add a vehicle</h2>
 <form method="post" class="form-grid">
   <label>Number<input name="number" required></label>
@@ -37,4 +38,5 @@
   <label>Service every days<input type="number" name="service_interval_days" value="90"></label>
   <button>Save vehicle</button>
 </form>
+{% endif %}
 {% endblock %}

@@ -100,10 +100,39 @@ def create_app():
             return wrapper
         return deco
 
+    grant_names = ("allocate_vehicle", "reports")
+
+    def grants_for(user):
+        if not user:
+            return set()
+        if user["role"] == "ADMIN":
+            return set(grant_names)
+        if user["role"] != "MANAGER":
+            return set()
+        rows = g.db.execute(
+            "SELECT permission FROM manager_permissions WHERE user_id=?",
+            (user["id"],),
+        ).fetchall()
+        return {row["permission"] for row in rows}
+
+    def allowed(user, key):
+        return key in grants_for(user)
+
+    def can_read_reports(vehicle_id=None):
+        if g.user["role"] == "ADMIN":
+            return True
+        if g.user["role"] == "MANAGER":
+            return allowed(g.user, "reports")
+        if g.user["role"] == "DRIVER" and vehicle_id is not None:
+            own = assigned_vehicle(g.user["driver_id"])
+            return bool(own and own["id"] == vehicle_id)
+        return False
+
     @app.context_processor
     def inject():
         user = None
         unread = 0
+        grants = set()
         if session.get("uid"):
             try:
                 user = g.db.execute("SELECT * FROM users WHERE id=?", (session["uid"],)).fetchone()
@@ -112,9 +141,10 @@ def create_app():
                         "SELECT COUNT(*) AS c FROM notifications WHERE user_id=? AND is_read=0",
                         (user["id"],),
                     ).fetchone()["c"]
+                    grants = grants_for(user)
             except Exception:
                 user = None
-        return {"me": user, "unread": unread}
+        return {"me": user, "unread": unread, "grants": grants}
 
     def save_upload(file):
         if not file or not file.filename:
@@ -328,6 +358,8 @@ def create_app():
         if not work_date.startswith(month):
             work_date = month + "-01"
         if request.method == "POST":
+            if g.user["role"] == "MANAGER":
+                abort(403)
             if g.user["role"] == "DRIVER":
                 save_attendance(
                     g.user["driver_id"],
@@ -369,7 +401,8 @@ def create_app():
             days=days,
             sheet=sheet,
             marked=marked,
-            can_edit=g.user["role"] in {"ADMIN", "MANAGER"},
+            can_manage=g.user["role"] == "ADMIN",
+            can_punch=g.user["role"] == "DRIVER",
         )
 
     @app.route("/checklist", methods=["GET", "POST"])
@@ -607,6 +640,8 @@ def create_app():
     @roles("ADMIN", "MANAGER")
     def drivers():
         if request.method == "POST":
+            if g.user["role"] != "ADMIN":
+                abort(403)
             phone = clean_phone(request.form["phone"])
             aadhaar = clean_aadhaar(request.form.get("aadhaar"))
             if phone is None:
@@ -657,7 +692,7 @@ def create_app():
             args += [f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"]
         sql += " ORDER BY d.name"
         rows = g.db.execute(sql, args).fetchall()
-        return render_template("drivers.html", drivers=rows, q=q)
+        return render_template("drivers.html", drivers=rows, q=q, can_edit=g.user["role"] == "ADMIN")
 
     @app.route("/drivers/<int:driver_id>", methods=["GET", "POST"])
     @login_required
@@ -667,8 +702,28 @@ def create_app():
         driver = g.db.execute("SELECT * FROM drivers WHERE id=?", (driver_id,)).fetchone()
         if not driver:
             abort(404)
+        if request.method == "POST" and request.form.get("action") == "own_documents":
+            if g.user["role"] != "DRIVER" or g.user["driver_id"] != driver_id:
+                abort(403)
+            copy = save_upload(request.files.get("dl_copy"))
+            aadhaar_copy = save_upload(request.files.get("aadhaar_copy"))
+            if copy:
+                g.db.execute("UPDATE drivers SET dl_copy=? WHERE id=?", (copy, driver_id))
+            if aadhaar_copy:
+                g.db.execute("UPDATE drivers SET aadhaar_copy=? WHERE id=?", (aadhaar_copy, driver_id))
+            if copy or aadhaar_copy:
+                audit(g.db, g.user["id"], "UPDATE", "driver", driver_id, "documents")
+                flash("Your documents are updated.")
+            else:
+                flash("Choose an Aadhaar copy or a licence copy.")
+            g.db.commit()
+            return redirect(url_for("driver_detail", driver_id=driver_id))
         if request.method == "POST" and g.user["role"] in {"ADMIN", "MANAGER"}:
             action = request.form.get("action")
+            if action == "profile" and g.user["role"] != "ADMIN":
+                abort(403)
+            if action in {"assign", "update_assignment"} and not allowed(g.user, "allocate_vehicle"):
+                abort(403)
             if action == "profile":
                 aadhaar = clean_aadhaar(request.form.get("aadhaar"))
                 phone = clean_phone(request.form.get("phone"))
@@ -821,7 +876,10 @@ def create_app():
             history=history,
             vehicles=vehicles,
             summary=salary_summary(driver),
-            can_edit=g.user["role"] in {"ADMIN", "MANAGER"},
+            can_manage_driver=g.user["role"] == "ADMIN",
+            can_allocate=allowed(g.user, "allocate_vehicle"),
+            can_advances=g.user["role"] in {"ADMIN", "MANAGER"},
+            can_own_docs=g.user["role"] == "DRIVER",
             is_admin=g.user["role"] == "ADMIN",
             today=date.today().isoformat(),
         )
@@ -830,6 +888,8 @@ def create_app():
     @roles("ADMIN", "MANAGER")
     def vehicles():
         if request.method == "POST":
+            if g.user["role"] != "ADMIN":
+                abort(403)
             number = request.form["number"].strip().upper()
             if g.db.execute("SELECT id FROM vehicles WHERE number=?", (number,)).fetchone():
                 flash("That vehicle number already exists.")
@@ -882,7 +942,15 @@ def create_app():
         sql += " ORDER BY v.number"
         rows = g.db.execute(sql, args).fetchall()
         companies = g.db.execute("SELECT * FROM companies ORDER BY name").fetchall()
-        return render_template("vehicles.html", vehicles=rows, companies=companies, q=q, vtype=vtype, company_id=company_id)
+        return render_template(
+            "vehicles.html",
+            vehicles=rows,
+            companies=companies,
+            q=q,
+            vtype=vtype,
+            company_id=company_id,
+            can_edit=g.user["role"] == "ADMIN",
+        )
 
     @app.route("/vehicles/<int:vehicle_id>", methods=["GET", "POST"])
     @login_required
@@ -894,8 +962,20 @@ def create_app():
             own = assigned_vehicle(g.user["driver_id"])
             if not own or own["id"] != vehicle_id:
                 abort(403)
-        if request.method == "POST" and g.user["role"] in {"ADMIN", "MANAGER"}:
+        if request.method == "POST":
             action = request.form.get("action")
+            if action in {"document", "update_document"}:
+                if g.user["role"] == "DRIVER":
+                    own = assigned_vehicle(g.user["driver_id"])
+                    if not own or own["id"] != vehicle_id:
+                        abort(403)
+                elif g.user["role"] != "ADMIN":
+                    abort(403)
+            elif action == "assign_driver":
+                if not allowed(g.user, "allocate_vehicle"):
+                    abort(403)
+            elif g.user["role"] != "ADMIN":
+                abort(403)
             if action == "profile":
                 g.db.execute(
                     """UPDATE vehicles SET model=?, vtype=?, seats=?, purchase_date=?, purchase_price=?,
@@ -1112,7 +1192,10 @@ def create_app():
             kinds=DOC_KINDS,
             missing_kinds=missing_kinds,
             positions=POSITIONS,
-            can_edit=g.user["role"] in {"ADMIN", "MANAGER"},
+            can_edit=g.user["role"] == "ADMIN",
+            can_docs=g.user["role"] == "ADMIN" or g.user["role"] == "DRIVER",
+            can_allocate=allowed(g.user, "allocate_vehicle"),
+            can_service=g.user["role"] in {"ADMIN", "DRIVER"},
             today=date.today().isoformat(),
         )
 
@@ -1275,6 +1358,8 @@ def create_app():
     @login_required
     def fuel():
         if request.method == "POST":
+            if g.user["role"] == "MANAGER":
+                abort(403)
             vehicle = g.db.execute("SELECT * FROM vehicles WHERE id=?", (int(request.form["vehicle_id"]),)).fetchone()
             if not vehicle:
                 abort(404)
@@ -1320,18 +1405,37 @@ def create_app():
             args.append(end)
         sql += " ORDER BY f.entry_date DESC"
         rows = g.db.execute(sql, args).fetchall()
-        vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
-        return render_template("fuel.html", rows=rows, vehicles=vehicles, vehicle_id=vehicle_id, start=start, end=end, today=date.today().isoformat())
+        if g.user["role"] == "DRIVER":
+            own = assigned_vehicle(g.user["driver_id"])
+            vehicles = [own] if own else []
+        else:
+            vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
+        return render_template(
+            "fuel.html",
+            rows=rows,
+            vehicles=vehicles,
+            vehicle_id=vehicle_id,
+            start=start,
+            end=end,
+            today=date.today().isoformat(),
+            can_save=g.user["role"] != "MANAGER",
+        )
 
     @app.route("/service", methods=["GET", "POST"])
-    @roles("ADMIN", "MANAGER")
+    @login_required
     def service_entry():
         if request.method == "POST":
+            if g.user["role"] == "MANAGER":
+                abort(403)
             vehicle = g.db.execute(
                 "SELECT id FROM vehicles WHERE id=?", (int(request.form["vehicle_id"]),)
             ).fetchone()
             if not vehicle:
                 abort(404)
+            if g.user["role"] == "DRIVER":
+                own = assigned_vehicle(g.user["driver_id"])
+                if not own or own["id"] != vehicle["id"]:
+                    abort(403)
             service_type = request.form.get("service_type", "").strip()
             service_date = request.form.get("service_date", "").strip()
             if not service_type or not service_date:
@@ -1357,6 +1461,9 @@ def create_app():
         vehicle_id = request.args.get("vehicle_id", "")
         start = request.args.get("start", "")
         end = request.args.get("end", "")
+        if g.user["role"] == "DRIVER":
+            own = assigned_vehicle(g.user["driver_id"])
+            vehicle_id = str(own["id"]) if own else "-1"
         sql = """SELECT s.*, v.number FROM services s JOIN vehicles v ON v.id=s.vehicle_id WHERE 1=1"""
         args = []
         if vehicle_id:
@@ -1370,7 +1477,11 @@ def create_app():
             args.append(end)
         sql += " ORDER BY s.service_date DESC"
         rows = g.db.execute(sql, args).fetchall()
-        vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
+        if g.user["role"] == "DRIVER":
+            own = assigned_vehicle(g.user["driver_id"])
+            vehicles = [own] if own else []
+        else:
+            vehicles = g.db.execute("SELECT id, number, model FROM vehicles ORDER BY number").fetchall()
         return render_template(
             "service.html",
             rows=rows,
@@ -1379,6 +1490,7 @@ def create_app():
             start=start,
             end=end,
             today=date.today().isoformat(),
+            can_save=g.user["role"] != "MANAGER",
         )
 
     @app.route("/maintenance")
@@ -1412,14 +1524,22 @@ def create_app():
         return render_template("maintenance.html", cards=cards)
 
     @app.route("/mileage")
-    @roles("ADMIN", "MANAGER")
+    @login_required
     def mileage():
+        if g.user["role"] == "MANAGER" and not allowed(g.user, "reports"):
+            abort(403)
+        if g.user["role"] not in {"ADMIN", "MANAGER", "DRIVER"}:
+            abort(403)
         start = request.args.get("start", month_start())
         end = request.args.get("end", date.today().isoformat())
         rates = {row["vtype"]: row["per_km"] for row in g.db.execute("SELECT * FROM billing_rates")}
         rows = []
         totals = {"km": 0, "revenue": 0, "fuel": 0, "maintenance": 0, "profit": 0}
-        for vehicle in g.db.execute("SELECT * FROM vehicles ORDER BY number"):
+        fleet = g.db.execute("SELECT * FROM vehicles ORDER BY number").fetchall()
+        if g.user["role"] == "DRIVER":
+            own = assigned_vehicle(g.user["driver_id"])
+            fleet = [own] if own else []
+        for vehicle in fleet:
             stats = g.db.execute(
                 """SELECT COALESCE(SUM(end_km-start_km),0) km,
                           COALESCE(SUM(fuel_litres),0) litres,
@@ -1472,8 +1592,14 @@ def create_app():
         return render_template("mileage.html", rows=rows, totals=totals, start=start, end=end, rates=rates)
 
     @app.route("/reports", methods=["GET", "POST"])
-    @roles("ADMIN", "MANAGER")
+    @login_required
     def reports():
+        if g.user["role"] == "MANAGER" and not allowed(g.user, "reports"):
+            abort(403)
+        if g.user["role"] not in {"ADMIN", "MANAGER", "DRIVER"}:
+            abort(403)
+        if request.method == "POST" and g.user["role"] == "DRIVER":
+            abort(403)
         if request.method == "POST":
             vehicle = g.db.execute("SELECT * FROM vehicles WHERE id=?", (int(request.form["vehicle_id"]),)).fetchone()
             start = request.form["period_start"]
@@ -1562,6 +1688,28 @@ def create_app():
         companies = g.db.execute("SELECT * FROM companies ORDER BY name").fetchall()
         vehicles = g.db.execute("SELECT * FROM vehicles ORDER BY number").fetchall()
         rates = {r["vtype"]: r for r in g.db.execute("SELECT * FROM billing_rates")}
+        if g.user["role"] == "DRIVER":
+            own = assigned_vehicle(g.user["driver_id"])
+            number = own["number"] if own else ""
+            vehicle_expenses = [row for row in vehicle_expenses if row["number"] == number]
+            driver_row = g.db.execute(
+                "SELECT name FROM drivers WHERE id=?", (g.user["driver_id"],)
+            ).fetchone()
+            salaries = [row for row in salaries if driver_row and row["name"] == driver_row["name"]]
+            company_km = []
+            invoices = [row for row in invoices if own and row["vehicle_id"] == own["id"]]
+            vehicles = [own] if own else []
+            fuel_cost = sum(row["fuel"] for row in vehicle_expenses)
+            maint_cost = sum(row["maintenance"] for row in vehicle_expenses)
+            salary_cost = sum(row["salary"] for row in salaries)
+            revenue = sum(row["amount"] for row in invoices)
+            pnl = {
+                "revenue": revenue,
+                "fuel": fuel_cost,
+                "maintenance": maint_cost,
+                "salary": salary_cost,
+                "profit": revenue - fuel_cost - maint_cost - salary_cost,
+            }
         return render_template(
             "reports.html",
             start=start,
@@ -1574,12 +1722,15 @@ def create_app():
             companies=companies,
             vehicles=vehicles,
             rates=rates,
+            can_bill=g.user["role"] != "DRIVER",
         )
 
     @app.route("/invoices/<int:invoice_id>.csv")
-    @roles("ADMIN", "MANAGER")
+    @login_required
     def invoice_csv(invoice_id):
         inv = _invoice(invoice_id)
+        if not can_read_reports(inv["vehicle_id"]):
+            abort(403)
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow(["Invoice", inv["id"], "Company", inv["company"], "Vehicle", inv["number"]])
@@ -1589,9 +1740,11 @@ def create_app():
         return send_file(data, as_attachment=True, download_name=f"invoice-{inv['id']}.csv", mimetype="text/csv")
 
     @app.route("/invoices/<int:invoice_id>.xlsx")
-    @roles("ADMIN", "MANAGER")
+    @login_required
     def invoice_xlsx(invoice_id):
         inv = _invoice(invoice_id)
+        if not can_read_reports(inv["vehicle_id"]):
+            abort(403)
         rows = [
             ["Field", "Value"],
             ["Invoice", inv["id"]],
@@ -1616,9 +1769,11 @@ def create_app():
         )
 
     @app.route("/invoices/<int:invoice_id>.pdf")
-    @roles("ADMIN", "MANAGER")
+    @login_required
     def invoice_pdf(invoice_id):
         inv = _invoice(invoice_id)
+        if not can_read_reports(inv["vehicle_id"]):
+            abort(403)
         lines = [
             "Janani",
             f"Invoice #{inv['id']}",
@@ -1654,6 +1809,77 @@ def create_app():
         g.db.execute("UPDATE notifications SET is_read=1 WHERE user_id=?", (g.user["id"],))
         g.db.commit()
         return render_template("notifications.html", rows=rows)
+
+    @app.route("/users", methods=["GET", "POST"])
+    @roles("ADMIN")
+    def users_admin():
+        if request.method == "POST":
+            action = request.form.get("action")
+            if action == "create":
+                phone = clean_phone(request.form.get("phone"))
+                name = request.form.get("name", "").strip()
+                role = request.form.get("role")
+                if phone is None:
+                    flash("Phone number must be 10 digits.")
+                elif not name:
+                    flash("Enter a name.")
+                elif role not in {"ADMIN", "MANAGER"}:
+                    flash("Choose Admin or Manager.")
+                elif g.db.execute("SELECT id FROM users WHERE phone=?", (phone,)).fetchone():
+                    flash("That phone number is already a user.")
+                else:
+                    cur = g.db.execute(
+                        "INSERT INTO users (phone, name, role) VALUES (?,?,?)",
+                        (phone, name, role),
+                    )
+                    if role == "MANAGER":
+                        for key in grant_names:
+                            if request.form.get(key):
+                                g.db.execute(
+                                    "INSERT INTO manager_permissions (user_id, permission) VALUES (?,?)",
+                                    (cur.lastrowid, key),
+                                )
+                    audit(g.db, g.user["id"], "CREATE", "user", cur.lastrowid, role)
+                    g.db.commit()
+                    flash(f"{name} can sign in as {role.title()}.")
+            elif action == "access":
+                user = g.db.execute(
+                    "SELECT * FROM users WHERE id=?", (int(request.form["user_id"]),)
+                ).fetchone()
+                if not user or user["role"] == "DRIVER":
+                    abort(404)
+                role = request.form.get("role")
+                if role not in {"ADMIN", "MANAGER"}:
+                    abort(403)
+                if user["id"] == g.user["id"] and role != "ADMIN":
+                    flash("Keep your own account as Admin.")
+                    return redirect(url_for("users_admin"))
+                if user["role"] == "ADMIN" and role != "ADMIN":
+                    others = g.db.execute(
+                        "SELECT COUNT(*) c FROM users WHERE role='ADMIN' AND id!=?",
+                        (user["id"],),
+                    ).fetchone()["c"]
+                    if not others:
+                        flash("Keep at least one Admin account.")
+                        return redirect(url_for("users_admin"))
+                g.db.execute("UPDATE users SET role=? WHERE id=?", (role, user["id"]))
+                g.db.execute("DELETE FROM manager_permissions WHERE user_id=?", (user["id"],))
+                if role == "MANAGER":
+                    for key in grant_names:
+                        if request.form.get(key):
+                            g.db.execute(
+                                "INSERT INTO manager_permissions (user_id, permission) VALUES (?,?)",
+                                (user["id"], key),
+                            )
+                audit(g.db, g.user["id"], "UPDATE", "user", user["id"], role)
+                g.db.commit()
+                flash(f"{user['name']} updated.")
+            return redirect(url_for("users_admin"))
+        people = g.db.execute("SELECT * FROM users ORDER BY role, name").fetchall()
+        held = {}
+        for row in g.db.execute("SELECT user_id, permission FROM manager_permissions"):
+            held.setdefault(row["user_id"], set()).add(row["permission"])
+        return render_template("users.html", people=people, held=held, grant_names=grant_names)
 
     @app.route("/audit")
     @roles("ADMIN")

@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
-<h1><a class="back-label" href="{{ url_for('drivers') if can_edit else url_for('driver_home') }}">Back</a> {{ driver.name }}</h1>
+<h1><a class="back-label" href="{{ url_for('driver_home' if me.role == 'DRIVER' else 'drivers') }}">Back</a> {{ driver.name }}</h1>
 <section class="cards">
   <article><span>Monthly salary</span><strong>₹{{ '%.0f'|format(summary.monthly) }}</strong></article>
   <article><span>Advance this month</span><strong>₹{{ '%.0f'|format(summary.advance_month) }}</strong></article>
   <article><span>All advances</span><strong>₹{{ '%.0f'|format(summary.advance_all) }}</strong></article>
   <article><span>Remaining payable</span><strong>₹{{ '%.0f'|format(summary.remaining) }}</strong></article>
 </section>
-{% if can_edit %}
+{% if can_manage_driver %}
 <form method="post" enctype="multipart/form-data" class="form-grid">
   <input type="hidden" name="action" value="profile">
   <label>Name<input name="name" value="{{ driver.name }}" required></label>
@@ -26,8 +26,16 @@
 {% endif %}
 {% if driver.aadhaar_copy %}<p><a href="{{ url_for('files', name=driver.aadhaar_copy) }}">Open Aadhaar copy</a></p>{% endif %}
 {% if driver.dl_copy %}<p><a href="{{ url_for('files', name=driver.dl_copy) }}">Open licence copy</a></p>{% endif %}
+{% if can_own_docs %}
+<form method="post" enctype="multipart/form-data" class="form-grid">
+  <input type="hidden" name="action" value="own_documents">
+  <label>Replace Aadhaar copy<input type="file" name="aadhaar_copy" accept=".pdf,.png,.jpg,.jpeg,.webp"></label>
+  <label>Replace licence copy<input type="file" name="dl_copy" accept=".pdf,.png,.jpg,.jpeg,.webp"></label>
+  <button>Update my documents</button>
+</form>
+{% endif %}
 <h2>Assign vehicle</h2>
-{% if can_edit %}
+{% if can_allocate %}
 <form method="post" class="inline">
   <input type="hidden" name="action" value="assign">
   <select name="vehicle_id">{% for v in vehicles %}<option value="{{ v.id }}">{{ v.number }} · {{ v.model }}</option>{% endfor %}</select>
@@ -37,14 +45,14 @@
 {% endif %}
 <h2>Assignment history</h2>
 <table>
-  <tr><th>Vehicle</th><th>Model</th><th>From</th><th>To</th>{% if can_edit %}<th>Update</th>{% endif %}</tr>
+  <tr><th>Vehicle</th><th>Model</th><th>From</th><th>To</th>{% if can_allocate %}<th>Update</th>{% endif %}</tr>
   {% for row in history %}
   <tr>
     <td>{{ row.number }}</td>
     <td>{{ row.model }}</td>
     <td>{{ row.start_date }}</td>
     <td>{{ row.end_date or 'Current' }}</td>
-    {% if can_edit %}
+    {% if can_allocate %}
     <td>
       <form method="post" class="inline">
         <input type="hidden" name="action" value="update_assignment">
@@ -64,7 +72,7 @@
   <tr><td colspan="5">No vehicle assigned yet.</td></tr>
   {% endfor %}
 </table>
-{% if can_edit %}
+{% if can_advances %}
 <h2>Advances</h2>
 <form method="post" class="inline" data-salary="{{ summary.monthly }}" data-taken="{{ summary.advance_month }}" data-old="0">
   <input type="hidden" name="action" value="advance">

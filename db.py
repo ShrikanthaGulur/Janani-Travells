@@ -14,6 +14,11 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL CHECK(role IN ('ADMIN','MANAGER','DRIVER')),
   driver_id INTEGER
 );
+CREATE TABLE IF NOT EXISTS manager_permissions (
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  permission TEXT NOT NULL,
+  PRIMARY KEY (user_id, permission)
+);
 CREATE TABLE IF NOT EXISTS otp_codes (
   id INTEGER PRIMARY KEY,
   phone TEXT NOT NULL,
