@@ -83,6 +83,7 @@
       {% endif %}
     </nav>
     <div class="who">{{ me.name }}<br><span>{{ me.role }}</span><br><a href="{{ url_for('logout') }}">Sign out</a></div>
+    <p class="credit">Powered by <strong>Vidvix Technologies</strong></p>
   </aside>
   <main>
     {% if request.endpoint not in ['dashboard', 'driver_home'] %}
